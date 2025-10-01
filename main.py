@@ -83,6 +83,11 @@ if not args.fps_limit:
         f"\nFPS limit set to {args.fps_limit} for {platform} platform. If you want to set a custom FPS limit, use the --fps_limit flag.\n"
     )
 
+# Close the first device to free it for multi-device mode
+if is_multi_device:
+    first_device.close()
+    first_device = None
+
 # ---------------------------------------------------------------------------
 # Pipeline creation function for reuse across devices
 # ---------------------------------------------------------------------------
