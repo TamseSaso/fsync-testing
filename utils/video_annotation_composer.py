@@ -3,6 +3,11 @@ import numpy as np
 import depthai as dai
 from depthai_nodes.utils import AnnotationHelper
 
+try:
+    from pupil_apriltags import Detector as AprilTagDetector
+except Exception:
+    AprilTagDetector = None
+
 
 class VideoAnnotationComposer(dai.node.ThreadedHostNode):
     """
@@ -29,11 +34,26 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
         
         # Store latest annotations
         self.latest_annotations = None
+        
+        # AprilTag detector (initialized lazily)
+        self._detector = None
 
     def build(self, video_output: dai.Node.Output, annotations_output: dai.Node.Output) -> "VideoAnnotationComposer":
         video_output.link(self.video_input)
         annotations_output.link(self.annotations_input)
         return self
+    
+    def _lazy_init_detector(self) -> None:
+        """Initialize AprilTag detector on first use."""
+        if self._detector is None and AprilTagDetector is not None:
+            self._detector = AprilTagDetector(
+                families="tag36h11",
+                nthreads=2,
+                quad_decimate=1.0,
+                quad_sigma=0.0,
+                refine_edges=True,
+                decode_sharpening=0.25,
+            )
 
     def run(self) -> None:
         while self.isRunning():
@@ -99,20 +119,12 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
             # This is not optimal but will work as a demonstration
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             
-            # Import AprilTag detector
-            try:
-                from pupil_apriltags import Detector as AprilTagDetector
-                detector = AprilTagDetector(
-                    families="tag36h11",
-                    nthreads=2,
-                    quad_decimate=1.0,
-                    quad_sigma=0.0,
-                    refine_edges=True,
-                    decode_sharpening=0.25,
-                )
-                
+            # Initialize detector if needed
+            self._lazy_init_detector()
+            
+            if self._detector is not None:
                 # Detect tags and draw them
-                detections = detector.detect(gray)[:4]  # Max 4 tags
+                detections = self._detector.detect(gray)[:4]  # Max 4 tags
                 
                 for det in detections:
                     # Draw rectangle around tag
@@ -125,8 +137,7 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
                     cv2.putText(frame, f"ID {det.tag_id}", 
                                (center_x - 20, center_y - 10), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                
-            except ImportError:
+            else:
                 # If pupil_apriltags is not available, just add a simple overlay
                 cv2.putText(frame, "AprilTag Detection Active", 
                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
