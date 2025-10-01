@@ -160,7 +160,6 @@ if is_multi_device:
     # Multi-device mode with synchronization
     with contextlib.ExitStack() as stack:
         pipelines = []
-        nodes_data = []
         device_ids = []
         
         print("Creating pipelines for multiple devices...")
@@ -175,33 +174,27 @@ if is_multi_device:
             print(f"    Device ID: {device.getDeviceId()}")
             print(f"    Num of cameras: {len(device.getConnectedCameras())}")
             
-            # Create pipeline for this device
-            pipeline = dai.Pipeline(device)
+            # Create pipeline using context manager for this device
+            pipeline = stack.enter_context(dai.Pipeline(device))
             pipelines.append(pipeline)
             
-            # Set up nodes within the pipeline
+            # Set up nodes within the pipeline context
             nodes = setup_device_nodes(pipeline, device_id)
-            nodes_data.append(nodes)
             
-            # Start the pipeline
-            pipeline.start()
-            
-            # Add pipeline to stack for proper cleanup
-            stack.callback(pipeline.close)
-        
-        # Register all pipelines with visualizer
-        for i, (pipeline, nodes) in enumerate(zip(pipelines, nodes_data)):
+            # Register this device's topics with visualizer
             device_prefix = f"Device_{i+1}"
             visualizer.addTopic(f"{device_prefix} - Video with AprilTags", nodes['video_composer'].out, "video")
             visualizer.addTopic(f"{device_prefix} - Sampled Panel (2s)", nodes['sampling_node'].out, "panel")
             visualizer.addTopic(f"{device_prefix} - LED Grid (32x32)", nodes['led_visualizer'].out, "led")
             visualizer.registerPipeline(pipeline)
+            
+            # Start the pipeline
+            pipeline.start()
         
-        # Main loop with synchronization
+        # Main loop
         print("Starting multi-device synchronized processing...")
         
         while True:
-            # Collect frames from all devices (this is handled by visualizer queues)
             # In multi-device mode, the visualizer manages the display
             # Each device pipeline runs independently and feeds the visualizer
             
