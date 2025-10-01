@@ -181,15 +181,16 @@ if is_multi_device:
             # Set up nodes within the pipeline context
             nodes = setup_device_nodes(pipeline, device_id)
             
-            # Register this device's topics with visualizer
+            # Add topics to visualizer (same order as single-device mode)
             device_prefix = f"Device_{i+1}"
             visualizer.addTopic(f"{device_prefix} - Video with AprilTags", nodes['video_composer'].out, "video")
             visualizer.addTopic(f"{device_prefix} - Sampled Panel (2s)", nodes['sampling_node'].out, "panel")
             visualizer.addTopic(f"{device_prefix} - LED Grid (32x32)", nodes['led_visualizer'].out, "led")
-            visualizer.registerPipeline(pipeline)
             
-            # Start the pipeline (context manager will handle build)
+            # Build, start and register (explicit build needed for stack.enter_context)
+            pipeline.build()
             pipeline.start()
+            visualizer.registerPipeline(pipeline)
         
         # Main loop
         print("Starting multi-device synchronized processing...")
