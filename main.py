@@ -92,66 +92,61 @@ if is_multi_device:
 # ---------------------------------------------------------------------------
 # Pipeline creation function for reuse across devices
 # ---------------------------------------------------------------------------
-def create_device_pipeline(device, device_id="device"):
-    """Create the complete pipeline for a single device."""
+def setup_device_nodes(pipeline, device_id="device"):
+    """Set up nodes within an active pipeline context."""
     
-    pipeline = dai.Pipeline(device)
-    
-    # Use the pipeline context for node creation
-    with pipeline:
-        # Create camera or video input
-        if args.media_path:
-            replay = pipeline.create(dai.node.ReplayVideo)
-            replay.setReplayVideoFile(Path(args.media_path))
-            replay.setOutFrameType(frame_type)
-            replay.setLoop(True)
-            if args.fps_limit:
-                replay.setFps(args.fps_limit)
-            source_out = replay.out
-        else:
-            cam = pipeline.create(dai.node.Camera).build()
-            if SET_MANUAL_EXPOSURE:
-                cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=100)
-            source_out = cam.requestOutput((1920, 1080), frame_type, fps=args.fps_limit)
+    # Create camera or video input
+    if args.media_path:
+        replay = pipeline.create(dai.node.ReplayVideo)
+        replay.setReplayVideoFile(Path(args.media_path))
+        replay.setOutFrameType(frame_type)
+        replay.setLoop(True)
+        if args.fps_limit:
+            replay.setFps(args.fps_limit)
+        source_out = replay.out
+    else:
+        cam = pipeline.create(dai.node.Camera).build()
+        if SET_MANUAL_EXPOSURE:
+            cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=100)
+        source_out = cam.requestOutput((1920, 1080), frame_type, fps=args.fps_limit)
 
-        # AprilTag detection and annotations
-        apriltag_node = AprilTagAnnotationNode(
-            families=args.apriltag_families,
-            max_tags=args.apriltag_max,
-            quad_decimate=args.apriltag_decimate,
-        )
-        apriltag_node.build(source_out)
+    # AprilTag detection and annotations
+    apriltag_node = AprilTagAnnotationNode(
+        families=args.apriltag_families,
+        max_tags=args.apriltag_max,
+        quad_decimate=args.apriltag_decimate,
+    )
+    apriltag_node.build(source_out)
 
-        # Perspective-rectified panel crop
-        warp_node = AprilTagWarpNode(
-            panel_width, 
-            panel_height, 
-            families=args.apriltag_families, 
-            quad_decimate=args.apriltag_decimate,
-            tag_size=args.apriltag_size,
-            z_offset=args.z_offset
-        )
-        warp_node.build(source_out)
+    # Perspective-rectified panel crop
+    warp_node = AprilTagWarpNode(
+        panel_width, 
+        panel_height, 
+        families=args.apriltag_families, 
+        quad_decimate=args.apriltag_decimate,
+        tag_size=args.apriltag_size,
+        z_offset=args.z_offset
+    )
+    warp_node.build(source_out)
 
-        # Create sampling node that captures frames every 2 seconds from warp_node
-        sampling_node = FrameSamplingNode(sample_interval_seconds=2.0)
-        sampling_node.build(warp_node.out)
+    # Create sampling node that captures frames every 2 seconds from warp_node
+    sampling_node = FrameSamplingNode(sample_interval_seconds=2.0)
+    sampling_node.build(warp_node.out)
 
-        # Create LED grid analyzer to detect 32x32 LED states from sampled frames
-        led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.5)
-        led_analyzer.build(sampling_node.out)
+    # Create LED grid analyzer to detect 32x32 LED states from sampled frames
+    led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.5)
+    led_analyzer.build(sampling_node.out)
 
-        # Create LED grid visualizer to display the LED grid state
-        led_visualizer = LEDGridVisualizer(output_size=(1024, 1024))
-        led_visualizer.build(led_analyzer.out)
+    # Create LED grid visualizer to display the LED grid state
+    led_visualizer = LEDGridVisualizer(output_size=(1024, 1024))
+    led_visualizer.build(led_analyzer.out)
 
-        # Create composite video with AprilTag annotations overlaid
-        video_composer = VideoAnnotationComposer()
-        video_composer.build(source_out, apriltag_node.out)
+    # Create composite video with AprilTag annotations overlaid
+    video_composer = VideoAnnotationComposer()
+    video_composer.build(source_out, apriltag_node.out)
 
-    # Return pipeline and output nodes (pipeline context is exited but pipeline object remains valid)
+    # Return node references
     return {
-        'pipeline': pipeline,
         'video_composer': video_composer,
         'sampling_node': sampling_node, 
         'led_visualizer': led_visualizer,
@@ -164,10 +159,9 @@ def create_device_pipeline(device, device_id="device"):
 if is_multi_device:
     # Multi-device mode with synchronization
     with contextlib.ExitStack() as stack:
-        devices = []
-        pipelines_data = []
+        pipelines = []
+        nodes_data = []
         device_ids = []
-        fpsCounters = []
         
         print("Creating pipelines for multiple devices...")
         
@@ -175,32 +169,32 @@ if is_multi_device:
         for i, device_info in enumerate(devices_to_use):
             device = stack.enter_context(dai.Device(device_info))
             device_id = device_info.getXLinkDeviceDesc().name
-            devices.append(device)
             device_ids.append(device_id)
             
             print(f"=== Connected to device {i+1}: {device_id}")
             print(f"    Device ID: {device.getDeviceId()}")
             print(f"    Num of cameras: {len(device.getConnectedCameras())}")
             
-            # Create pipeline for this device
-            pipeline_data = create_device_pipeline(device, device_id)
-            pipelines_data.append(pipeline_data)
-            fpsCounters.append(FPSCounter())
+            # Create pipeline for this device within the context
+            pipeline = stack.enter_context(dai.Pipeline(device))
+            pipelines.append(pipeline)
+            
+            # Set up nodes within the pipeline context
+            nodes = setup_device_nodes(pipeline, device_id)
+            nodes_data.append(nodes)
             
             # Start the pipeline
-            pipeline_data['pipeline'].start()
+            pipeline.start()
         
         # Register all pipelines with visualizer
-        for i, pipeline_data in enumerate(pipelines_data):
+        for i, (pipeline, nodes) in enumerate(zip(pipelines, nodes_data)):
             device_prefix = f"Device_{i+1}"
-            visualizer.addTopic(f"{device_prefix} - Video with AprilTags", pipeline_data['video_composer'].out, "video")
-            visualizer.addTopic(f"{device_prefix} - Sampled Panel (2s)", pipeline_data['sampling_node'].out, "panel")
-            visualizer.addTopic(f"{device_prefix} - LED Grid (32x32)", pipeline_data['led_visualizer'].out, "led")
-            visualizer.registerPipeline(pipeline_data['pipeline'])
+            visualizer.addTopic(f"{device_prefix} - Video with AprilTags", nodes['video_composer'].out, "video")
+            visualizer.addTopic(f"{device_prefix} - Sampled Panel (2s)", nodes['sampling_node'].out, "panel")
+            visualizer.addTopic(f"{device_prefix} - LED Grid (32x32)", nodes['led_visualizer'].out, "led")
+            visualizer.registerPipeline(pipeline)
         
         # Main loop with synchronization
-        latest_frames = {}
-        receivedFrames = [False for _ in pipelines_data]
         print("Starting multi-device synchronized processing...")
         
         while True:
