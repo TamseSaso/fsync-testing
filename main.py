@@ -188,7 +188,6 @@ if is_multi_device:
             visualizer.addTopic(f"{device_prefix} - LED Grid (32x32)", nodes['led_visualizer'].out, "led")
             
             # Build, start and register (explicit build needed for stack.enter_context)
-            pipeline.build()
             pipeline.start()
             visualizer.registerPipeline(pipeline)
         
