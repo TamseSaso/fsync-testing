@@ -181,6 +181,9 @@ if is_multi_device:
             # Set up nodes within the pipeline context
             nodes = setup_device_nodes(pipeline, device_id)
             
+            # Build the pipeline before registration
+            pipeline.build()
+            
             # Register this device's topics with visualizer
             device_prefix = f"Device_{i+1}"
             visualizer.addTopic(f"{device_prefix} - Video with AprilTags", nodes['video_composer'].out, "video")
