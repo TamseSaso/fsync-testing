@@ -175,16 +175,19 @@ if is_multi_device:
             print(f"    Device ID: {device.getDeviceId()}")
             print(f"    Num of cameras: {len(device.getConnectedCameras())}")
             
-            # Create pipeline for this device within the context
-            pipeline = stack.enter_context(dai.Pipeline(device))
+            # Create pipeline for this device
+            pipeline = dai.Pipeline(device)
             pipelines.append(pipeline)
             
-            # Set up nodes within the pipeline context
+            # Set up nodes within the pipeline
             nodes = setup_device_nodes(pipeline, device_id)
             nodes_data.append(nodes)
             
             # Start the pipeline
             pipeline.start()
+            
+            # Add pipeline to stack for proper cleanup
+            stack.callback(pipeline.close)
         
         # Register all pipelines with visualizer
         for i, (pipeline, nodes) in enumerate(zip(pipelines, nodes_data)):
