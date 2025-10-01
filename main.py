@@ -181,9 +181,6 @@ if is_multi_device:
             # Set up nodes within the pipeline context
             nodes = setup_device_nodes(pipeline, device_id)
             
-            # Build the pipeline before registration
-            pipeline.build()
-            
             # Register this device's topics with visualizer
             device_prefix = f"Device_{i+1}"
             visualizer.addTopic(f"{device_prefix} - Video with AprilTags", nodes['video_composer'].out, "video")
@@ -191,7 +188,7 @@ if is_multi_device:
             visualizer.addTopic(f"{device_prefix} - LED Grid (32x32)", nodes['led_visualizer'].out, "led")
             visualizer.registerPipeline(pipeline)
             
-            # Start the pipeline
+            # Start the pipeline (context manager will handle build)
             pipeline.start()
         
         # Main loop
