@@ -101,12 +101,12 @@ if device_names is not None:
             video_composer = VideoAnnotationComposer()
             video_composer.build(source_out, apriltag_node.out)
 
-            # Name topics per-device
+            # Name topics per-device and ensure unique stream keys per device
             prefix = f"{dev_name}"
-            visualizer.addTopic(f"{prefix} | Video with AprilTags", video_composer.out, "video")
-            visualizer.addTopic(f"{prefix} | Panel Crop", warp_node.out, "panel")
-            visualizer.addTopic(f"{prefix} | Sampled Panel (2s)", sampling_node.out, "panel")
-            visualizer.addTopic(f"{prefix} | LED Grid (32x32)", led_visualizer.out, "led")
+            visualizer.addTopic(f"{prefix} | Video with AprilTags", video_composer.out, f"video_{idx}")
+            visualizer.addTopic(f"{prefix} | Panel Crop", warp_node.out, f"panel_{idx}")
+            visualizer.addTopic(f"{prefix} | Sampled Panel (2s)", sampling_node.out, f"panel_sampled_{idx}")
+            visualizer.addTopic(f"{prefix} | LED Grid (32x32)", led_visualizer.out, f"led_{idx}")
 
             pipeline.start()
             visualizer.registerPipeline(pipeline)
