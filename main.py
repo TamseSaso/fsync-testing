@@ -1,9 +1,4 @@
 from pathlib import Path
-import os
-import sys
-import locale
-import io
-import contextlib
 import depthai as dai
 from depthai_nodes.node import ParsingNeuralNetwork
 from utils.arguments import initialize_argparser
@@ -15,135 +10,88 @@ from utils.led_grid_analyzer import LEDGridAnalyzer
 from utils.led_grid_visualizer import LEDGridVisualizer
 from utils.video_annotation_composer import VideoAnnotationComposer
 
-# Force UTF-8 to avoid decode errors from native logs/exceptions
-os.environ.setdefault("PYTHONUTF8", "1")
-os.environ.setdefault("LC_ALL", "C.UTF-8")
-os.environ.setdefault("LANG", "C.UTF-8")
-try:
-    locale.setlocale(locale.LC_ALL, "C.UTF-8")
-except Exception:
-    pass
-
-# Ensure stdout/stderr can handle any device log bytes without crashing
-try:
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    else:
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
-except Exception:
-    pass
-
 _, args = initialize_argparser()
 
 # Parse panel size from arguments
 panel_width, panel_height = map(int, args.panel_size.split(','))
 
-# Single viewer for all devices
 visualizer = dai.RemoteConnection(httpPort=8082)
+device = dai.Device(dai.DeviceInfo(args.device)) if args.device else dai.Device()
+platform = device.getPlatform().name
+print(f"Platform: {platform}")
 
-# Multi-device only; ignore --device, require at least two devices
-if args.device and not args.devices:
-    print("Ignoring --device. This application requires at least two devices. Use --devices ip1,ip2.")
+frame_type = (
+    dai.ImgFrame.Type.BGR888i if platform == "RVC4" else dai.ImgFrame.Type.BGR888p
+)
 
-# Build device list
-if args.devices:
-    print("Multi-device mode enabled")
-    device_names = [name.strip() for name in args.devices.split(',') if name.strip()]
-else:
-    device_names = ["10.12.211.82", "10.12.211.84"]
-    print("Multi-device mode enabled (default IPs)")
+if not args.fps_limit:
+    args.fps_limit = 10 if platform == "RVC2" else 30
+    print(
+        f"\nFPS limit set to {args.fps_limit} for {platform} platform. If you want to set a custom FPS limit, use the --fps_limit flag.\n"
+    )
 
-assert len(device_names) >= 2, "At least two devices are required. Provide them via --devices ip1,ip2"
+with dai.Pipeline(device) as pipeline:
+    print("Creating pipeline...")
 
-if args.media_path:
-    print("--media_path is ignored in multi-device mode; using live cameras for all devices.")
-
-with contextlib.ExitStack() as stack:
-    # Build all pipelines first
-    built = []
-    for idx, dev_name in enumerate(device_names):
-        print(f"Connecting to device {idx}: {dev_name}")
-        pipeline = stack.enter_context(dai.Pipeline(dai.Device(dai.DeviceInfo(dev_name))))
-        device = pipeline.getDefaultDevice()
-        platform = device.getPlatform().name
-        print(f"  Platform: {platform}")
-
-        frame_type = (
-            dai.ImgFrame.Type.BGR888i if platform == "RVC4" else dai.ImgFrame.Type.BGR888p
-        )
-
-        fps_limit = args.fps_limit
-        if not fps_limit:
-            fps_limit = 10 if platform == "RVC2" else 30
-            print(f"  FPS limit set to {fps_limit} for {platform} platform. Override via --fps_limit.")
-
-        print("  Creating pipeline...")
-
+    # Create camera or video input
+    if args.media_path:
+        replay = pipeline.create(dai.node.ReplayVideo)
+        replay.setReplayVideoFile(Path(args.media_path))
+        replay.setOutFrameType(frame_type)
+        replay.setLoop(True)
+        if args.fps_limit:
+            replay.setFps(args.fps_limit)
+        source_out = replay.out
+    else:
         cam = pipeline.create(dai.node.Camera).build()
-        cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=200)
-        # Request separate outputs to avoid multi-linking the same output
-        source_out_april = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
-        source_out_composer = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
-        source_out_warp = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
+        cam.initialControl.setManualExposure(exposureTimeUs=6000,
+                           sensitivityIso=200)
+        source_out = cam.requestOutput((1920, 1080), frame_type, fps=args.fps_limit)
 
-        apriltag_node = AprilTagAnnotationNode(
-            families=args.apriltag_families,
-            max_tags=args.apriltag_max,
-            quad_decimate=args.apriltag_decimate,
-        )
-        apriltag_node.build(source_out_april)
+    # AprilTag detection and annotations
+    apriltag_node = AprilTagAnnotationNode(
+        families=args.apriltag_families,
+        max_tags=args.apriltag_max,
+        quad_decimate=args.apriltag_decimate,
+    )
+    apriltag_node.build(source_out)
 
-        warp_node = AprilTagWarpNode(
-            panel_width,
-            panel_height,
-            families=args.apriltag_families,
-            quad_decimate=args.apriltag_decimate,
-            tag_size=args.apriltag_size,
-            z_offset=args.z_offset,
-        )
-        warp_node.build(source_out_warp)
+    # Perspective-rectified panel crop
+    warp_node = AprilTagWarpNode(
+        panel_width, 
+        panel_height, 
+        families=args.apriltag_families, 
+        quad_decimate=args.apriltag_decimate,
+        tag_size=args.apriltag_size,
+        z_offset=args.z_offset
+    )
+    warp_node.build(source_out)
 
-        sampling_node = FrameSamplingNode(sample_interval_seconds=2.0)
-        sampling_node.build(warp_node.out)
+    # Create sampling node that captures frames every 2 seconds from warp_node
+    sampling_node = FrameSamplingNode(sample_interval_seconds=2.0)
+    sampling_node.build(warp_node.out)
 
-        led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.5)
-        led_analyzer.build(sampling_node.out)
+    # Create LED grid analyzer to detect 32x32 LED states from sampled frames
+    led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.5)
+    led_analyzer.build(sampling_node.out)
 
-        led_visualizer = LEDGridVisualizer(output_size=(1024, 1024))
-        led_visualizer.build(led_analyzer.out)
+    # Create LED grid visualizer to display the LED grid state
+    led_visualizer = LEDGridVisualizer(output_size=(1024, 1024))
+    led_visualizer.build(led_analyzer.out)
 
-        video_composer = VideoAnnotationComposer()
-        video_composer.build(source_out_composer, apriltag_node.out)
+    # Create composite video with AprilTag annotations overlaid
+    video_composer = VideoAnnotationComposer()
+    video_composer.build(source_out, apriltag_node.out)
 
-        built.append({
-            "idx": idx,
-            "dev_name": dev_name,
-            "pipeline": pipeline,
-            "source_out": source_out_composer,
-            "video_out": video_composer.out,
-            "panel_out": warp_node.out,
-            "sampled_out": sampling_node.out,
-            "led_out": led_visualizer.out,
-        })
+    # Add video with AprilTag annotations overlaid
+    visualizer.addTopic("Video with AprilTags", video_composer.out, "video")
+    visualizer.addTopic("Panel Crop", warp_node.out, "panel")
+    visualizer.addTopic("Sampled Panel (2s)", sampling_node.out, "panel")
+    visualizer.addTopic("LED Grid (32x32)", led_visualizer.out, "led")
 
-    # Start all pipelines, then register topics for each
-    for entry in built:
-        idx = entry["idx"]
-        dev_name = entry["dev_name"]
-        pipeline = entry["pipeline"]
-        pipeline.start()
-        visualizer.registerPipeline(pipeline)
-
-        prefix = f"{dev_name}"
-        visualizer.addTopic(f"{prefix} | Raw Camera", entry["source_out"], "video")
-        visualizer.addTopic(f"{prefix} | Video with AprilTags", entry["video_out"], "video")
-        visualizer.addTopic(f"{prefix} | Panel Crop", entry["panel_out"], "panel")
-        visualizer.addTopic(f"{prefix} | Sampled Panel (2s)", entry["sampled_out"], "panel")
-        visualizer.addTopic(f"{prefix} | LED Grid (32x32)", entry["led_out"], "led")
-
-    # UI loop
+    pipeline.start()
+    visualizer.registerPipeline(pipeline)
+    
     while True:
         key = visualizer.waitKey(1)
         if key == ord("q"):

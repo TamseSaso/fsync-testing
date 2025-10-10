@@ -15,10 +15,10 @@ class LEDGridVisualizer(dai.node.ThreadedHostNode):
         super().__init__()
         
         self.input = self.createInput()
-        self.input.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, False)])
+        self.input.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, True)])
         
         self.out = self.createOutput()
-        self.out.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, False)])
+        self.out.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
         
         self.output_w, self.output_h = output_size
         self.grid_size = grid_size

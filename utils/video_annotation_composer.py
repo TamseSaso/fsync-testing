@@ -2,7 +2,6 @@ import cv2
 import numpy as np
 import depthai as dai
 from depthai_nodes.utils import AnnotationHelper
-from .apriltag_shared import get_detector
 
 
 class VideoAnnotationComposer(dai.node.ThreadedHostNode):
@@ -19,23 +18,17 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
         
         # Create inputs for video and annotations
         self.video_input = self.createInput()
-        self.video_input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, False)])
+        self.video_input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
         
         self.annotations_input = self.createInput()
-        self.annotations_input.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, False)])
+        self.annotations_input.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, True)])
         
         # Create output for composited video
         self.out = self.createOutput()
-        self.out.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, False)])
+        self.out.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
         
         # Store latest annotations
         self.latest_annotations = None
-
-        # Shared AprilTag detector for optional overlay parsing
-        try:
-            self._detector, self._lock = get_detector("tag36h11", 1.0)
-        except Exception:
-            self._detector, self._lock = None, None
 
     def build(self, video_output: dai.Node.Output, annotations_output: dai.Node.Output) -> "VideoAnnotationComposer":
         video_output.link(self.video_input)
@@ -106,19 +99,35 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
             # This is not optimal but will work as a demonstration
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             
-            # Use shared AprilTag detector if available
-            if self._detector is not None and self._lock is not None:
-                with self._lock:
-                    detections = self._detector.detect(gray)[:4]
+            # Import AprilTag detector
+            try:
+                from pupil_apriltags import Detector as AprilTagDetector
+                detector = AprilTagDetector(
+                    families="tag36h11",
+                    nthreads=2,
+                    quad_decimate=1.0,
+                    quad_sigma=0.0,
+                    refine_edges=True,
+                    decode_sharpening=0.25,
+                )
+                
+                # Detect tags and draw them
+                detections = detector.detect(gray)[:4]  # Max 4 tags
+                
                 for det in detections:
+                    # Draw rectangle around tag
                     corners = np.array([[pt[0], pt[1]] for pt in det.corners], dtype=np.int32)
                     cv2.polylines(frame, [corners], True, (0, 255, 0), 2)
+                    
+                    # Draw tag ID
                     center_x = int(np.mean(corners[:, 0]))
                     center_y = int(np.mean(corners[:, 1]))
                     cv2.putText(frame, f"ID {det.tag_id}", 
                                (center_x - 20, center_y - 10), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            else:
+                
+            except ImportError:
+                # If pupil_apriltags is not available, just add a simple overlay
                 cv2.putText(frame, "AprilTag Detection Active", 
                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 

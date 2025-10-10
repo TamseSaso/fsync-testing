@@ -4,7 +4,10 @@ import cv2
 import numpy as np
 import depthai as dai
 
-from .apriltag_shared import get_detector
+try:
+    from pupil_apriltags import Detector as AprilTagDetector
+except Exception:
+    AprilTagDetector = None
 
 
 def _order_points_clockwise(points: np.ndarray) -> np.ndarray:
@@ -56,10 +59,10 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         super().__init__()
 
         self.input = self.createInput()
-        self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, False)])
+        self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
 
         self.out = self.createOutput()
-        self.out.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, False)])
+        self.out.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
 
         self.out_w = int(out_width)
         self.out_h = int(out_height)
@@ -71,7 +74,6 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         self.padding_left = -0.01  # Hardcoded left padding as fraction of width 
         self.padding_right = -0.012  # Hardcoded right padding as fraction of width
         self._detector = None
-        self._lock = None
         
         # Default camera parameters for 1920x1080 resolution (approximate values)
         # These should ideally be calibrated for the specific camera
@@ -89,7 +91,16 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
 
     def _lazy_init(self) -> None:
         if self._detector is None:
-            self._detector, self._lock = get_detector(self.families, self.quad_decimate)
+            if AprilTagDetector is None:
+                raise RuntimeError("pupil-apriltags is not installed. Add it to requirements.txt")
+            self._detector = AprilTagDetector(
+                families=self.families,
+                nthreads=2,
+                quad_decimate=self.quad_decimate,
+                quad_sigma=0.0,
+                refine_edges=True,
+                decode_sharpening=0.25,
+            )
 
     def _estimate_pose_and_apply_offset(self, detection, image_shape) -> np.ndarray:
         """Estimate pose of AprilTag and apply z-offset to its corners."""
@@ -160,8 +171,7 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
                 continue
 
             gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-            with self._lock:
-                detections = self._detector.detect(gray)
+            detections = self._detector.detect(gray)
 
             if len(detections) >= 4:
                 # Choose 4 detections with largest spread (convex hull approach)
