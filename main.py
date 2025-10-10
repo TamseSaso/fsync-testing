@@ -1,4 +1,7 @@
 from pathlib import Path
+import os
+import sys
+import locale
 import contextlib
 import depthai as dai
 from depthai_nodes.node import ParsingNeuralNetwork
@@ -10,6 +13,15 @@ from utils.sampling_node import FrameSamplingNode
 from utils.led_grid_analyzer import LEDGridAnalyzer
 from utils.led_grid_visualizer import LEDGridVisualizer
 from utils.video_annotation_composer import VideoAnnotationComposer
+
+# Force UTF-8 to avoid decode errors from native logs/exceptions
+os.environ.setdefault("PYTHONUTF8", "1")
+os.environ.setdefault("LC_ALL", "C.UTF-8")
+os.environ.setdefault("LANG", "C.UTF-8")
+try:
+    locale.setlocale(locale.LC_ALL, "C.UTF-8")
+except Exception:
+    pass
 
 _, args = initialize_argparser()
 
