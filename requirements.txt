@@ -1,4 +1,4 @@
 depthai-nodes
-opencv-contrib-python>=4.7.0
+opencv-contrib-python-headless>=4.7.0
 numpy
 pupil-apriltags>=1.0.4
