@@ -18,10 +18,10 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
         super().__init__()
 
         self.input = self.createInput()
-        self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
+        self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, False)])
 
         self.out = self.createOutput()
-        self.out.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, True)])
+        self.out.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, False)])
 
         self.families = families
         self.max_tags = max_tags

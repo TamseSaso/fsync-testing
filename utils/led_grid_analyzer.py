@@ -15,10 +15,10 @@ class LEDGridAnalyzer(dai.node.ThreadedHostNode):
         super().__init__()
         
         self.input = self.createInput()
-        self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
+        self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, False)])
         
         self.out = self.createOutput()
-        self.out.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, True)])
+        self.out.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, False)])
         
         self.grid_size = grid_size
         self.threshold_multiplier = threshold_multiplier

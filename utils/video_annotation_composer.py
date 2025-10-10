@@ -19,14 +19,14 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
         
         # Create inputs for video and annotations
         self.video_input = self.createInput()
-        self.video_input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
+        self.video_input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, False)])
         
         self.annotations_input = self.createInput()
-        self.annotations_input.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, True)])
+        self.annotations_input.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, False)])
         
         # Create output for composited video
         self.out = self.createOutput()
-        self.out.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
+        self.out.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, False)])
         
         # Store latest annotations
         self.latest_annotations = None
