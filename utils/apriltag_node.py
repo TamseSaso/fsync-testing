@@ -4,11 +4,7 @@ import cv2
 import depthai as dai
 
 from depthai_nodes.utils import AnnotationHelper
-
-try:
-    from pupil_apriltags import Detector as AprilTagDetector
-except Exception as exc:  # pragma: no cover
-    AprilTagDetector = None
+from .apriltag_shared import get_detector
 
 
 class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
@@ -31,6 +27,7 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
         self.max_tags = max_tags
         self.quad_decimate = quad_decimate
         self._detector = None
+        self._lock = None
 
     def build(self, frames: dai.Node.Output) -> "AprilTagAnnotationNode":
         frames.link(self.input)
@@ -38,20 +35,9 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
 
     def _lazy_init(self) -> None:
         if self._detector is None:
-            if AprilTagDetector is None:
-                raise RuntimeError(
-                    "pupil-apriltags is not installed. Add 'pupil-apriltags' to requirements.txt."
-                )
             # Ensure reasonable decimation
             safe_decimate = self.quad_decimate if self.quad_decimate and self.quad_decimate >= 0.5 else 1.0
-            self._detector = AprilTagDetector(
-                families=self.families,
-                nthreads=2,
-                quad_decimate=safe_decimate,
-                quad_sigma=0.0,
-                refine_edges=True,
-                decode_sharpening=0.25,
-            )
+            self._detector, self._lock = get_detector(self.families, safe_decimate)
             self.quad_decimate = safe_decimate
 
     @staticmethod
@@ -74,18 +60,8 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
 
             gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
-            detections = self._detector.detect(gray)[: self.max_tags]
-            # Fallback: if none detected and decimate > 1.5, try higher-res pass
-            if not detections and (self.quad_decimate is None or self.quad_decimate > 1.2):
-                tmp = AprilTagDetector(
-                    families=self.families,
-                    nthreads=2,
-                    quad_decimate=1.0,
-                    quad_sigma=0.0,
-                    refine_edges=True,
-                    decode_sharpening=0.25,
-                )
-                detections = tmp.detect(gray)[: self.max_tags]
+            with self._lock:
+                detections = self._detector.detect(gray)[: self.max_tags]
 
             annotations = AnnotationHelper()
             img_h, img_w = gray.shape[:2]
