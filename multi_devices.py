@@ -10,7 +10,6 @@ Minimal changes to original script:
 import contextlib
 import datetime
 
-import os
 import cv2
 import depthai as dai
 import time
@@ -74,7 +73,6 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-HEADLESS = os.environ.get("DISPLAY", "") == "" or os.environ.get("OPENCV_HEADLESS", "0") == "1"
 with contextlib.ExitStack() as stack:
     # deviceInfos = dai.Device.getAllAvailableDevices()
     # print("=== Found devices: ", deviceInfos)
@@ -155,16 +153,10 @@ with contextlib.ExitStack() as stack:
                     cv2.LINE_AA,
                 )
 
-                if not HEADLESS:
-                    cv2.imshow("synced_view", cv2.hconcat(imgs))
+                cv2.imshow("synced_view", cv2.hconcat(imgs))
                 latest_frames.clear()  # Wait for next batch
 
-        if not HEADLESS:
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
-        else:
-            # In headless mode, yield briefly to avoid busy loop
-            time.sleep(0.001)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
 
-if not HEADLESS:
-    cv2.destroyAllWindows()
+cv2.destroyAllWindows()
