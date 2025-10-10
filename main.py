@@ -71,14 +71,16 @@ with contextlib.ExitStack() as stack:
 
         cam = pipeline.create(dai.node.Camera).build()
         cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=200)
-        source_out = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
+        # Request separate outputs to avoid multi-linking same output
+        source_out_april = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
+        source_out_warp = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
 
         apriltag_node = AprilTagAnnotationNode(
             families=args.apriltag_families,
             max_tags=args.apriltag_max,
             quad_decimate=args.apriltag_decimate,
         )
-        apriltag_node.build(source_out)
+        apriltag_node.build(source_out_april)
 
         warp_node = AprilTagWarpNode(
             panel_width,
@@ -88,7 +90,7 @@ with contextlib.ExitStack() as stack:
             tag_size=args.apriltag_size,
             z_offset=args.z_offset,
         )
-        warp_node.build(source_out)
+        warp_node.build(source_out_warp)
 
         sampling_node = FrameSamplingNode(sample_interval_seconds=2.0)
         sampling_node.build(warp_node.out)
@@ -100,13 +102,13 @@ with contextlib.ExitStack() as stack:
         led_visualizer.build(led_analyzer.out)
 
         video_composer = VideoAnnotationComposer()
-        video_composer.build(source_out, apriltag_node.out)
+        video_composer.build(source_out_april, apriltag_node.out)
 
         built.append({
             "idx": idx,
             "dev_name": dev_name,
             "pipeline": pipeline,
-            "source_out": source_out,
+            "source_out": source_out_april,
             "video_out": video_composer.out,
             "panel_out": warp_node.out,
             "sampled_out": sampling_node.out,
