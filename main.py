@@ -16,8 +16,6 @@ _, args = initialize_argparser()
 # Parse panel size from arguments
 panel_width, panel_height = map(int, args.panel_size.split(','))
 
-visualizer = dai.RemoteConnection(httpPort=8082)
-
 # Multi-device only; ignore --device, require at least two devices
 if args.device and not args.devices:
     print("Ignoring --device. This application requires at least two devices. Use --devices ip1,ip2.")
@@ -37,6 +35,7 @@ if args.media_path:
 
 with contextlib.ExitStack() as stack:
     pipelines = []
+    visualizers = []
     for idx, dev_name in enumerate(device_names):
         print(f"Connecting to device {idx}: {dev_name}")
         pipeline = stack.enter_context(dai.Pipeline(dai.Device(dai.DeviceInfo(dev_name))))
@@ -99,6 +98,11 @@ with contextlib.ExitStack() as stack:
         video_composer = VideoAnnotationComposer()
         video_composer.build(source_out, apriltag_node.out)
 
+        # Start per-device viewer on distinct port to avoid overwriting prior pipeline
+        http_port = 8082 + idx
+        visualizer = dai.RemoteConnection(httpPort=http_port)
+        print(f"To connect to the viewer for {dev_name}, open http://localhost:{http_port}")
+
         # Name topics per-device; keep correct type keys so viewer shows both
         prefix = f"{dev_name}"
         # Also publish raw camera feed to help debug visibility per device
@@ -111,10 +115,14 @@ with contextlib.ExitStack() as stack:
         pipeline.start()
         visualizer.registerPipeline(pipeline)
         pipelines.append(pipeline)
+        visualizers.append(visualizer)
 
-    # UI loop
-    while True:
-        key = visualizer.waitKey(1)
-        if key == ord("q"):
-            print("Got q key. Exiting...")
-            break
+    # UI loop (poll all visualizers)
+    running = True
+    while running:
+        for viz in visualizers:
+            key = viz.waitKey(1)
+            if key == ord("q"):
+                print("Got q key. Exiting...")
+                running = False
+                break
