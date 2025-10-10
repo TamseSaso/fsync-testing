@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 import sys
 import locale
+import io
 import contextlib
 import depthai as dai
 from depthai_nodes.node import ParsingNeuralNetwork
@@ -20,6 +21,17 @@ os.environ.setdefault("LC_ALL", "C.UTF-8")
 os.environ.setdefault("LANG", "C.UTF-8")
 try:
     locale.setlocale(locale.LC_ALL, "C.UTF-8")
+except Exception:
+    pass
+
+# Ensure stdout/stderr can handle any device log bytes without crashing
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    else:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 except Exception:
     pass
 
