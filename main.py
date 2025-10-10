@@ -37,7 +37,8 @@ if args.media_path:
     print("--media_path is ignored in multi-device mode; using live cameras for all devices.")
 
 with contextlib.ExitStack() as stack:
-    pipelines = []
+    # Build all pipelines first
+    built = []
     for idx, dev_name in enumerate(device_names):
         print(f"Connecting to device {idx}: {dev_name}")
         pipeline = stack.enter_context(dai.Pipeline(dai.Device(dai.DeviceInfo(dev_name))))
@@ -45,27 +46,21 @@ with contextlib.ExitStack() as stack:
         platform = device.getPlatform().name
         print(f"  Platform: {platform}")
 
-        # Determine frame type per device
         frame_type = (
             dai.ImgFrame.Type.BGR888i if platform == "RVC4" else dai.ImgFrame.Type.BGR888p
         )
 
-        # Determine FPS limit per device if not explicitly set
         fps_limit = args.fps_limit
         if not fps_limit:
             fps_limit = 10 if platform == "RVC2" else 30
-            print(
-                f"  FPS limit set to {fps_limit} for {platform} platform. Override via --fps_limit."
-            )
+            print(f"  FPS limit set to {fps_limit} for {platform} platform. Override via --fps_limit.")
 
         print("  Creating pipeline...")
 
-        # Camera input per device
         cam = pipeline.create(dai.node.Camera).build()
         cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=200)
         source_out = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
 
-        # AprilTag detection and annotations
         apriltag_node = AprilTagAnnotationNode(
             families=args.apriltag_families,
             max_tags=args.apriltag_max,
@@ -73,7 +68,6 @@ with contextlib.ExitStack() as stack:
         )
         apriltag_node.build(source_out)
 
-        # Perspective-rectified panel crop
         warp_node = AprilTagWarpNode(
             panel_width,
             panel_height,
@@ -84,34 +78,43 @@ with contextlib.ExitStack() as stack:
         )
         warp_node.build(source_out)
 
-        # Create sampling node that captures frames every 2 seconds from warp_node
         sampling_node = FrameSamplingNode(sample_interval_seconds=2.0)
         sampling_node.build(warp_node.out)
 
-        # Create LED grid analyzer to detect 32x32 LED states from sampled frames
         led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.5)
         led_analyzer.build(sampling_node.out)
 
-        # Create LED grid visualizer to display the LED grid state
         led_visualizer = LEDGridVisualizer(output_size=(1024, 1024))
         led_visualizer.build(led_analyzer.out)
 
-        # Create composite video with AprilTag annotations overlaid
         video_composer = VideoAnnotationComposer()
         video_composer.build(source_out, apriltag_node.out)
 
-        # Name topics per-device; keep correct type keys so viewer shows both
-        prefix = f"{dev_name}"
-        # Also publish raw camera feed to help debug visibility per device
-        visualizer.addTopic(f"{prefix} | Raw Camera", source_out, "video")
-        visualizer.addTopic(f"{prefix} | Video with AprilTags", video_composer.out, "video")
-        visualizer.addTopic(f"{prefix} | Panel Crop", warp_node.out, "panel")
-        visualizer.addTopic(f"{prefix} | Sampled Panel (2s)", sampling_node.out, "panel")
-        visualizer.addTopic(f"{prefix} | LED Grid (32x32)", led_visualizer.out, "led")
+        built.append({
+            "idx": idx,
+            "dev_name": dev_name,
+            "pipeline": pipeline,
+            "source_out": source_out,
+            "video_out": video_composer.out,
+            "panel_out": warp_node.out,
+            "sampled_out": sampling_node.out,
+            "led_out": led_visualizer.out,
+        })
 
+    # Start all pipelines, then register topics for each
+    for entry in built:
+        idx = entry["idx"]
+        dev_name = entry["dev_name"]
+        pipeline = entry["pipeline"]
         pipeline.start()
         visualizer.registerPipeline(pipeline)
-        pipelines.append(pipeline)
+
+        prefix = f"{dev_name}"
+        visualizer.addTopic(f"{prefix} | Raw Camera", entry["source_out"], "video")
+        visualizer.addTopic(f"{prefix} | Video with AprilTags", entry["video_out"], "video")
+        visualizer.addTopic(f"{prefix} | Panel Crop", entry["panel_out"], "panel")
+        visualizer.addTopic(f"{prefix} | Sampled Panel (2s)", entry["sampled_out"], "panel")
+        visualizer.addTopic(f"{prefix} | LED Grid (32x32)", entry["led_out"], "led")
 
     # UI loop
     while True:
