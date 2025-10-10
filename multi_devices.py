@@ -20,7 +20,7 @@ TARGET_FPS = 25  # Must match sensorFps in createPipeline()
 SYNC_THRESHOLD_SEC = 1.0 / (2 * TARGET_FPS)  # Max drift to accept as "in sync"
 SET_MANUAL_EXPOSURE = False  # Set to True to use manual exposure settings
 # DEVICE_INFOS: list[dai.DeviceInfo] = ["IP_MASTER", "IP_SLAVE_1"] # Insert the device IPs here, e.g.:
-DEVICE_INFOS = [dai.DeviceInfo(ip) for ip in ["192.168.0.146", "192.168.0.149"]] # The master camera needs to be first here
+DEVICE_INFOS = [dai.DeviceInfo(ip) for ip in ["10.12.211.82", "10.12.211.84"]] # The master camera needs to be first here
 assert len(DEVICE_INFOS) > 1, "At least two devices are required for this example."
 # ---------------------------------------------------------------------------
 # Helpers
