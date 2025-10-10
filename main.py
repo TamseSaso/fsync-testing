@@ -83,8 +83,9 @@ with contextlib.ExitStack() as stack:
 
         cam = pipeline.create(dai.node.Camera).build()
         cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=200)
-        # Request separate outputs to avoid multi-linking same output
+        # Request separate outputs to avoid multi-linking the same output
         source_out_april = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
+        source_out_composer = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
         source_out_warp = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
 
         apriltag_node = AprilTagAnnotationNode(
@@ -114,13 +115,13 @@ with contextlib.ExitStack() as stack:
         led_visualizer.build(led_analyzer.out)
 
         video_composer = VideoAnnotationComposer()
-        video_composer.build(source_out_april, apriltag_node.out)
+        video_composer.build(source_out_composer, apriltag_node.out)
 
         built.append({
             "idx": idx,
             "dev_name": dev_name,
             "pipeline": pipeline,
-            "source_out": source_out_april,
+            "source_out": source_out_composer,
             "video_out": video_composer.out,
             "panel_out": warp_node.out,
             "sampled_out": sampling_node.out,
