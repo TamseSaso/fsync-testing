@@ -1,4 +1,5 @@
 from pathlib import Path
+import contextlib
 import depthai as dai
 from depthai_nodes.node import ParsingNeuralNetwork
 from utils.arguments import initialize_argparser
@@ -16,84 +17,179 @@ _, args = initialize_argparser()
 panel_width, panel_height = map(int, args.panel_size.split(','))
 
 visualizer = dai.RemoteConnection(httpPort=8082)
-device = dai.Device(dai.DeviceInfo(args.device)) if args.device else dai.Device()
-platform = device.getPlatform().name
-print(f"Platform: {platform}")
 
-frame_type = (
-    dai.ImgFrame.Type.BGR888i if platform == "RVC4" else dai.ImgFrame.Type.BGR888p
-)
+# If --devices provided, run multi-device mode; else keep original single-device behavior
+if args.devices:
+    print("Multi-device mode enabled")
+    device_names = [name.strip() for name in args.devices.split(',') if name.strip()]
+    if len(device_names) < 2:
+        print("--devices should contain at least two entries. Falling back to single-device mode.")
+        device_names = ["10.12.211.82", "10.12.211.84"]
 
-if not args.fps_limit:
-    args.fps_limit = 10 if platform == "RVC2" else 30
-    print(
-        f"\nFPS limit set to {args.fps_limit} for {platform} platform. If you want to set a custom FPS limit, use the --fps_limit flag.\n"
+    if device_names:
+        if args.media_path:
+            print("--media_path is ignored in multi-device mode; using live cameras for all devices.")
+
+    with contextlib.ExitStack() as stack:
+        pipelines = []
+        for idx, dev_name in enumerate(device_names):
+            print(f"Connecting to device {idx}: {dev_name}")
+            pipeline = stack.enter_context(dai.Pipeline(dai.Device(dai.DeviceInfo(dev_name))))
+            device = pipeline.getDefaultDevice()
+            platform = device.getPlatform().name
+            print(f"  Platform: {platform}")
+
+            # Determine frame type per device
+            frame_type = (
+                dai.ImgFrame.Type.BGR888i if platform == "RVC4" else dai.ImgFrame.Type.BGR888p
+            )
+
+            # Determine FPS limit per device if not explicitly set
+            fps_limit = args.fps_limit
+            if not fps_limit:
+                fps_limit = 10 if platform == "RVC2" else 30
+                print(
+                    f"  FPS limit set to {fps_limit} for {platform} platform. Override via --fps_limit."
+                )
+
+            print("  Creating pipeline...")
+
+            # Camera input per device
+            cam = pipeline.create(dai.node.Camera).build()
+            cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=200)
+            source_out = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
+
+            # AprilTag detection and annotations
+            apriltag_node = AprilTagAnnotationNode(
+                families=args.apriltag_families,
+                max_tags=args.apriltag_max,
+                quad_decimate=args.apriltag_decimate,
+            )
+            apriltag_node.build(source_out)
+
+            # Perspective-rectified panel crop
+            warp_node = AprilTagWarpNode(
+                panel_width,
+                panel_height,
+                families=args.apriltag_families,
+                quad_decimate=args.apriltag_decimate,
+                tag_size=args.apriltag_size,
+                z_offset=args.z_offset,
+            )
+            warp_node.build(source_out)
+
+            # Create sampling node that captures frames every 2 seconds from warp_node
+            sampling_node = FrameSamplingNode(sample_interval_seconds=2.0)
+            sampling_node.build(warp_node.out)
+
+            # Create LED grid analyzer to detect 32x32 LED states from sampled frames
+            led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.5)
+            led_analyzer.build(sampling_node.out)
+
+            # Create LED grid visualizer to display the LED grid state
+            led_visualizer = LEDGridVisualizer(output_size=(1024, 1024))
+            led_visualizer.build(led_analyzer.out)
+
+            # Create composite video with AprilTag annotations overlaid
+            video_composer = VideoAnnotationComposer()
+            video_composer.build(source_out, apriltag_node.out)
+
+            # Name topics per-device
+            prefix = f"{dev_name}"
+            visualizer.addTopic(f"{prefix} | Video with AprilTags", video_composer.out, "video")
+            visualizer.addTopic(f"{prefix} | Panel Crop", warp_node.out, "panel")
+            visualizer.addTopic(f"{prefix} | Sampled Panel (2s)", sampling_node.out, "panel")
+            visualizer.addTopic(f"{prefix} | LED Grid (32x32)", led_visualizer.out, "led")
+
+            pipeline.start()
+            visualizer.registerPipeline(pipeline)
+            pipelines.append(pipeline)
+
+        # UI loop
+        while True:
+            key = visualizer.waitKey(1)
+            if key == ord("q"):
+                print("Got q key. Exiting...")
+                break
+else:
+    # Original single-device behavior
+    device = dai.Device(dai.DeviceInfo(args.device)) if args.device else dai.Device()
+    platform = device.getPlatform().name
+    print(f"Platform: {platform}")
+
+    frame_type = (
+        dai.ImgFrame.Type.BGR888i if platform == "RVC4" else dai.ImgFrame.Type.BGR888p
     )
 
-with dai.Pipeline(device) as pipeline:
-    print("Creating pipeline...")
+    if not args.fps_limit:
+        args.fps_limit = 10 if platform == "RVC2" else 30
+        print(
+            f"\nFPS limit set to {args.fps_limit} for {platform} platform. If you want to set a custom FPS limit, use the --fps_limit flag.\n"
+        )
 
-    # Create camera or video input
-    if args.media_path:
-        replay = pipeline.create(dai.node.ReplayVideo)
-        replay.setReplayVideoFile(Path(args.media_path))
-        replay.setOutFrameType(frame_type)
-        replay.setLoop(True)
-        if args.fps_limit:
-            replay.setFps(args.fps_limit)
-        source_out = replay.out
-    else:
-        cam = pipeline.create(dai.node.Camera).build()
-        cam.initialControl.setManualExposure(exposureTimeUs=6000,
-                           sensitivityIso=200)
-        source_out = cam.requestOutput((1920, 1080), frame_type, fps=args.fps_limit)
+    with dai.Pipeline(device) as pipeline:
+        print("Creating pipeline...")
 
-    # AprilTag detection and annotations
-    apriltag_node = AprilTagAnnotationNode(
-        families=args.apriltag_families,
-        max_tags=args.apriltag_max,
-        quad_decimate=args.apriltag_decimate,
-    )
-    apriltag_node.build(source_out)
+        # Create camera or video input
+        if args.media_path:
+            replay = pipeline.create(dai.node.ReplayVideo)
+            replay.setReplayVideoFile(Path(args.media_path))
+            replay.setOutFrameType(frame_type)
+            replay.setLoop(True)
+            if args.fps_limit:
+                replay.setFps(args.fps_limit)
+            source_out = replay.out
+        else:
+            cam = pipeline.create(dai.node.Camera).build()
+            cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=200)
+            source_out = cam.requestOutput((1920, 1080), frame_type, fps=args.fps_limit)
 
-    # Perspective-rectified panel crop
-    warp_node = AprilTagWarpNode(
-        panel_width, 
-        panel_height, 
-        families=args.apriltag_families, 
-        quad_decimate=args.apriltag_decimate,
-        tag_size=args.apriltag_size,
-        z_offset=args.z_offset
-    )
-    warp_node.build(source_out)
+        # AprilTag detection and annotations
+        apriltag_node = AprilTagAnnotationNode(
+            families=args.apriltag_families,
+            max_tags=args.apriltag_max,
+            quad_decimate=args.apriltag_decimate,
+        )
+        apriltag_node.build(source_out)
 
-    # Create sampling node that captures frames every 2 seconds from warp_node
-    sampling_node = FrameSamplingNode(sample_interval_seconds=2.0)
-    sampling_node.build(warp_node.out)
+        # Perspective-rectified panel crop
+        warp_node = AprilTagWarpNode(
+            panel_width,
+            panel_height,
+            families=args.apriltag_families,
+            quad_decimate=args.apriltag_decimate,
+            tag_size=args.apriltag_size,
+            z_offset=args.z_offset,
+        )
+        warp_node.build(source_out)
 
-    # Create LED grid analyzer to detect 32x32 LED states from sampled frames
-    led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.5)
-    led_analyzer.build(sampling_node.out)
+        # Create sampling node that captures frames every 2 seconds from warp_node
+        sampling_node = FrameSamplingNode(sample_interval_seconds=2.0)
+        sampling_node.build(warp_node.out)
 
-    # Create LED grid visualizer to display the LED grid state
-    led_visualizer = LEDGridVisualizer(output_size=(1024, 1024))
-    led_visualizer.build(led_analyzer.out)
+        # Create LED grid analyzer to detect 32x32 LED states from sampled frames
+        led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.5)
+        led_analyzer.build(sampling_node.out)
 
-    # Create composite video with AprilTag annotations overlaid
-    video_composer = VideoAnnotationComposer()
-    video_composer.build(source_out, apriltag_node.out)
+        # Create LED grid visualizer to display the LED grid state
+        led_visualizer = LEDGridVisualizer(output_size=(1024, 1024))
+        led_visualizer.build(led_analyzer.out)
 
-    # Add video with AprilTag annotations overlaid
-    visualizer.addTopic("Video with AprilTags", video_composer.out, "video")
-    visualizer.addTopic("Panel Crop", warp_node.out, "panel")
-    visualizer.addTopic("Sampled Panel (2s)", sampling_node.out, "panel")
-    visualizer.addTopic("LED Grid (32x32)", led_visualizer.out, "led")
+        # Create composite video with AprilTag annotations overlaid
+        video_composer = VideoAnnotationComposer()
+        video_composer.build(source_out, apriltag_node.out)
 
-    pipeline.start()
-    visualizer.registerPipeline(pipeline)
-    
-    while True:
-        key = visualizer.waitKey(1)
-        if key == ord("q"):
-            print("Got q key. Exiting...")
-            break
+        # Add video with AprilTag annotations overlaid
+        visualizer.addTopic("Video with AprilTags", video_composer.out, "video")
+        visualizer.addTopic("Panel Crop", warp_node.out, "panel")
+        visualizer.addTopic("Sampled Panel (2s)", sampling_node.out, "panel")
+        visualizer.addTopic("LED Grid (32x32)", led_visualizer.out, "led")
+
+        pipeline.start()
+        visualizer.registerPipeline(pipeline)
+
+        while True:
+            key = visualizer.waitKey(1)
+            if key == ord("q"):
+                print("Got q key. Exiting...")
+                break
