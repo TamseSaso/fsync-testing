@@ -18,17 +18,24 @@ panel_width, panel_height = map(int, args.panel_size.split(','))
 
 visualizer = dai.RemoteConnection(httpPort=8082)
 
-# If --devices provided, run multi-device mode; else keep original single-device behavior
+# Determine multi-device list if applicable
+device_names = None
 if args.devices:
     print("Multi-device mode enabled")
     device_names = [name.strip() for name in args.devices.split(',') if name.strip()]
+elif not args.device:
+    # No explicit single device provided; default to two known IPs
+    device_names = ["10.12.211.82", "10.12.211.84"]
+    print("Multi-device mode enabled (default IPs)")
+
+# Multi-device path if we have a list
+if device_names is not None:
     if len(device_names) < 2:
-        print("--devices should contain at least two entries. Falling back to single-device mode.")
+        print("--devices should contain at least two entries. Falling back to default IPs.")
         device_names = ["10.12.211.82", "10.12.211.84"]
 
-    if device_names:
-        if args.media_path:
-            print("--media_path is ignored in multi-device mode; using live cameras for all devices.")
+    if args.media_path:
+        print("--media_path is ignored in multi-device mode; using live cameras for all devices.")
 
     with contextlib.ExitStack() as stack:
         pipelines = []
