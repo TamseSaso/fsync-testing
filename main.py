@@ -101,6 +101,8 @@ with contextlib.ExitStack() as stack:
 
         # Name topics per-device; keep correct type keys so viewer shows both
         prefix = f"{dev_name}"
+        # Also publish raw camera feed to help debug visibility per device
+        visualizer.addTopic(f"{prefix} | Raw Camera", source_out, "video")
         visualizer.addTopic(f"{prefix} | Video with AprilTags", video_composer.out, "video")
         visualizer.addTopic(f"{prefix} | Panel Crop", warp_node.out, "panel")
         visualizer.addTopic(f"{prefix} | Sampled Panel (2s)", sampling_node.out, "panel")
