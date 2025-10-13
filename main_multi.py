@@ -1,7 +1,12 @@
-from pathlib import Path
 import contextlib
-import types
+import datetime
+
+import cv2
+import time
+
+from pathlib import Path
 import depthai as dai
+from depthai_nodes.node import ParsingNeuralNetwork
 from utils.arguments import initialize_argparser
 
 from utils.apriltag_node import AprilTagAnnotationNode
@@ -10,122 +15,150 @@ from utils.sampling_node import FrameSamplingNode
 from utils.led_grid_analyzer import LEDGridAnalyzer
 from utils.led_grid_visualizer import LEDGridVisualizer
 from utils.video_annotation_composer import VideoAnnotationComposer
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+TARGET_FPS = 25  # Must match sensorFps in createPipeline()
+SYNC_THRESHOLD_SEC = 1.0 / (2 * TARGET_FPS)  # Max drift to accept as "in sync"
+SET_MANUAL_EXPOSURE = True  # Set to True to use manual exposure settings
+# DEVICE_INFOS: list[dai.DeviceInfo] = ["IP_MASTER", "IP_SLAVE_1"] # Insert the device IPs here, e.g.:
+DEVICE_INFOS = [dai.DeviceInfo(ip) for ip in ["10.12.211.82", "10.12.211.84"]] # The master camera needs to be first here
+assert len(DEVICE_INFOS) > 1, "At least two devices are required for this example."
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+class FPSCounter:
+    def __init__(self):
+        self.frameTimes = []
 
-def createPipeline(pipeline: dai.Pipeline, args, frame_type: dai.ImgFrame.Type, panel_width: int, panel_height: int):
-    # Source: camera or media replay
-    if args.media_path:
-        replay = pipeline.create(dai.node.ReplayVideo)
-        replay.setReplayVideoFile(Path(args.media_path))
-        replay.setOutFrameType(frame_type)
-        replay.setLoop(True)
-        if args.fps_limit:
-            replay.setFps(args.fps_limit)
-        source_out = replay.out
-    else:
-        cam = pipeline.create(dai.node.Camera).build()
-        cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=200)
-        source_out = cam.requestOutput((1920, 1080), frame_type, fps=args.fps_limit)
+    def tick(self):
+        now = time.time()
+        self.frameTimes.append(now)
+        self.frameTimes = self.frameTimes[-100:]
 
-    # AprilTag detection and annotations
-    apriltag_node = AprilTagAnnotationNode(
-        families=args.apriltag_families,
-        max_tags=args.apriltag_max,
-        quad_decimate=args.apriltag_decimate,
+    def getFps(self):
+        if len(self.frameTimes) <= 1:
+            return 0
+        # Calculate the FPS
+        return (len(self.frameTimes) - 1) / (self.frameTimes[-1] - self.frameTimes[0])
+
+
+def format_time(td: datetime.timedelta) -> str:
+    hours, remainder_seconds = divmod(td.seconds, 3600)
+    minutes, seconds = divmod(remainder_seconds, 60)
+    milliseconds, microseconds_remainder = divmod(td.microseconds, 1000)
+    days_prefix = f"{td.days} day{'s' if td.days != 1 else ''}, " if td.days else ""
+    return (
+        f"{days_prefix}{hours:02d}:{minutes:02d}:{seconds:02d}."
+        f"{milliseconds:03d}.{microseconds_remainder:03d}"
     )
-    apriltag_node.build(source_out)
 
-    # Perspective-rectified panel crop
-    warp_node = AprilTagWarpNode(
-        panel_width,
-        panel_height,
-        families=args.apriltag_families,
-        quad_decimate=args.apriltag_decimate,
-        tag_size=args.apriltag_size,
-        z_offset=args.z_offset,
+
+# ---------------------------------------------------------------------------
+# Pipeline creation (unchanged API – only uses TARGET_FPS constant)
+# ---------------------------------------------------------------------------
+def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.CameraBoardSocket.CAM_A):
+    camRgb = (
+        pipeline.create(dai.node.Camera)
+        .build(socket, sensorFps=TARGET_FPS)
     )
-    warp_node.build(source_out)
-
-    # Sample every 2 seconds from warp_node
-    sampling_node = FrameSamplingNode(sample_interval_seconds=2.0)
-    sampling_node.build(warp_node.out)
-
-    # LED grid analyzer and visualizer
-    led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.5)
-    led_analyzer.build(sampling_node.out)
-
-    led_visualizer = LEDGridVisualizer(output_size=(1024, 1024))
-    led_visualizer.build(led_analyzer.out)
-
-    # Composite video with AprilTag annotations overlaid
-    video_composer = VideoAnnotationComposer()
-    video_composer.build(source_out, apriltag_node.out)
-
-    return {
-        "video_with_apriltags": video_composer.out,
-        "panel_crop": warp_node.out,
-        "sampled_panel": sampling_node.out,
-        "led_grid": led_visualizer.out,
-    }
+    output = (
+        camRgb.requestOutput(
+            (1920, 1080), dai.ImgFrame.Type.NV12, dai.ImgResizeMode.STRETCH
+        ).createOutputQueue()
+    )
+    if SET_MANUAL_EXPOSURE:
+        camRgb.initialControl.setManualExposure(6000, 200)
+    return pipeline, output
 
 
-def main():
-    _, args = initialize_argparser()
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+with contextlib.ExitStack() as stack:
+    # deviceInfos = dai.Device.getAllAvailableDevices()
+    # print("=== Found devices: ", deviceInfos)
 
-    # Parse panel size from arguments
-    panel_width, panel_height = map(int, args.panel_size.split(","))
+    queues = []
+    pipelines = []
+    device_ids = []
 
-    visualizer = dai.RemoteConnection(httpPort=8082)
-    # Hardcoded devices (master first)
-    device_infos: list[dai.DeviceInfo] = [
-        dai.DeviceInfo(ip) for ip in ["10.12.211.82", "10.12.211.84"]
-    ]
-    selected_infos = device_infos
+    for deviceInfo in DEVICE_INFOS:
+        pipeline = stack.enter_context(dai.Pipeline(dai.Device(deviceInfo)))
+        device = pipeline.getDefaultDevice()
 
-    with contextlib.ExitStack() as stack:
-        for deviceInfo in selected_infos:
-            pipeline = stack.enter_context(dai.Pipeline(dai.Device(deviceInfo)))
-            device = pipeline.getDefaultDevice()
+        print("=== Connected to", deviceInfo.getDeviceId())
+        print("    Device ID:", device.getDeviceId())
+        print("    Num of cameras:", len(device.getConnectedCameras()))
 
-            platform = device.getPlatform().name
-            print(f"Platform: {platform} | Device: {device.getDeviceId()}")
+        socket = device.getConnectedCameras()[0]
+        pipeline, out_q = createPipeline(pipeline, socket)
+        pipeline.start()
 
-            frame_type = (
-                dai.ImgFrame.Type.BGR888i if platform == "RVC4" else dai.ImgFrame.Type.BGR888p
-            )
+        pipelines.append(pipeline)
+        queues.append(out_q)
+        device_ids.append(deviceInfo.getXLinkDeviceDesc().name)
 
-            # Per-device FPS defaulting if not set
-            per_device_args = types.SimpleNamespace(**vars(args))
-            if not per_device_args.fps_limit:
-                per_device_args.fps_limit = 10 if platform == "RVC2" else 30
-                print(
-                    f"\nFPS limit set to {per_device_args.fps_limit} for {platform} platform. If you want to set a custom FPS limit, use the --fps_limit flag.\n"
+    # Buffer for latest frames; key = queue index
+    latest_frames = {}
+    fpsCounters = [FPSCounter() for _ in queues]
+    receivedFrames = [False for _ in queues]
+    while True:
+        # -------------------------------------------------------------------
+        # Collect the newest frame from each queue (non‑blocking)
+        # -------------------------------------------------------------------
+        for idx, q in enumerate(queues):
+            while q.has():
+                latest_frames[idx] = q.get()
+                if not receivedFrames[idx]:
+                    print("=== Received frame from", device_ids[idx])
+                    receivedFrames[idx] = True
+                fpsCounters[idx].tick()
+
+        # -------------------------------------------------------------------
+        # Synchronise: we need at least one frame from every camera and their
+        # timestamps must align within SYNC_THRESHOLD_SEC.
+        # -------------------------------------------------------------------
+        if len(latest_frames) == len(queues):
+            ts_values = [f.getTimestamp(dai.CameraExposureOffset.END).total_seconds() for f in latest_frames.values()]
+            if max(ts_values) - min(ts_values) <= SYNC_THRESHOLD_SEC:
+                # Build composite image side‑by‑side
+                imgs = []
+                for i in range(len(queues)):
+                    msg = latest_frames[i]
+                    frame = msg.getCvFrame()
+                    fps = fpsCounters[i].getFps()
+                    cv2.putText(
+                        frame,
+                        f"{device_ids[i]} | Timestamp: {ts_values[i]} | FPS:{fps:.2f}",
+                        (20, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (255, 0, 50),
+                        2,
+                        cv2.LINE_AA,
+                    )
+                    imgs.append(frame)
+
+                sync_status = "in sync" if abs(max(ts_values) - min(ts_values)) < 0.001 else "out of sync"
+                delta = max(ts_values) - min(ts_values)
+                color = (0, 255, 0) if sync_status == "in sync" else (0, 0, 255)
+                
+                cv2.putText(
+                    imgs[0],
+                    f"{sync_status} | delta = {delta*1e3:.3f} ms",
+                    (20, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    color,
+                    2,
+                    cv2.LINE_AA,
                 )
 
-            print("Creating pipeline...")
-            outputs = createPipeline(
-                pipeline, per_device_args, frame_type, panel_width, panel_height
-            )
-            # Suffix topics with device id for clarity
-            suffix = f" [{device.getDeviceId()}]"
-            visualizer.addTopic(
-                "Video with AprilTags" + suffix, outputs["video_with_apriltags"], "video"
-            )
-            visualizer.addTopic("Panel Crop" + suffix, outputs["panel_crop"], "panel")
-            visualizer.addTopic(
-                "Sampled Panel (2s)" + suffix, outputs["sampled_panel"], "panel"
-            )
-            visualizer.addTopic("LED Grid (32x32)" + suffix, outputs["led_grid"], "led")
+                cv2.imshow("synced_view", cv2.hconcat(imgs))
+                latest_frames.clear()  # Wait for next batch
 
-            # Start pipeline after topics are linked
-            pipeline.start()
-            visualizer.registerPipeline(pipeline)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
 
-        while True:
-            key = visualizer.waitKey(1)
-            if key == ord("q"):
-                print("Got q key. Exiting...")
-                break
-
-
-if __name__ == "__main__":
-    main()
+cv2.destroyAllWindows()
