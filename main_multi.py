@@ -106,6 +106,9 @@ def main():
                 pipeline, per_device_args, frame_type, panel_width, panel_height
             )
 
+            # Register pipeline with visualizer BEFORE adding topics (multi-device context)
+            visualizer.registerPipeline(pipeline)
+
             # Suffix topics with device id for clarity
             suffix = f" [{device.getDeviceId()}]"
             visualizer.addTopic(
@@ -117,8 +120,8 @@ def main():
             )
             visualizer.addTopic("LED Grid (32x32)" + suffix, outputs["led_grid"], "led")
 
+            # Start pipeline after topics are linked
             pipeline.start()
-            visualizer.registerPipeline(pipeline)
 
         while True:
             key = visualizer.waitKey(1)
