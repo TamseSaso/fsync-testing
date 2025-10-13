@@ -31,6 +31,7 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
         self.max_tags = max_tags
         self.quad_decimate = quad_decimate
         self._detector = None
+        self._detector_highres = None  # persistent high-res fallback to avoid per-frame ctor/dtor
 
     def build(self, frames: dai.Node.Output) -> "AprilTagAnnotationNode":
         frames.link(self.input)
@@ -75,17 +76,18 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
             gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
             detections = self._detector.detect(gray)[: self.max_tags]
-            # Fallback: if none detected and decimate > 1.5, try higher-res pass
+            # Fallback: if none detected and decimate > 1.2, run a persistent high-res detector
             if not detections and (self.quad_decimate is None or self.quad_decimate > 1.2):
-                tmp = AprilTagDetector(
-                    families=self.families,
-                    nthreads=2,
-                    quad_decimate=1.0,
-                    quad_sigma=0.0,
-                    refine_edges=True,
-                    decode_sharpening=0.25,
-                )
-                detections = tmp.detect(gray)[: self.max_tags]
+                if self._detector_highres is None:
+                    self._detector_highres = AprilTagDetector(
+                        families=self.families,
+                        nthreads=2,
+                        quad_decimate=1.0,
+                        quad_sigma=0.0,
+                        refine_edges=True,
+                        decode_sharpening=0.25,
+                    )
+                detections = self._detector_highres.detect(gray)[: self.max_tags]
 
             annotations = AnnotationHelper()
             img_h, img_w = gray.shape[:2]
