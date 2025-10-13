@@ -107,12 +107,12 @@ with contextlib.ExitStack() as stack:
 
         socket = device.getConnectedCameras()[0]
         pipeline, out_q, node_out = createPipeline(pipeline, socket)
-        pipeline.start()
 
         # Register topic per device without any annotations (raw stream)
         suffix = f" [{device.getDeviceId()}]"
         visualizer.addTopic("Camera" + suffix, node_out, "video")
         visualizer.registerPipeline(pipeline)
+        pipeline.start()
 
         pipelines.append(pipeline)
         queues.append(out_q)
