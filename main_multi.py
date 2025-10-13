@@ -106,6 +106,9 @@ def main():
                 pipeline, per_device_args, frame_type, panel_width, panel_height
             )
 
+            pipeline.start()
+            visualizer.registerPipeline(pipeline)
+
             # Suffix topics with device id for clarity
             suffix = f" [{device.getDeviceId()}]"
             visualizer.addTopic(
@@ -116,9 +119,6 @@ def main():
                 "Sampled Panel (2s)" + suffix, outputs["sampled_panel"], "panel"
             )
             visualizer.addTopic("LED Grid (32x32)" + suffix, outputs["led_grid"], "led")
-
-            pipeline.start()
-            visualizer.registerPipeline(pipeline)
 
         while True:
             key = visualizer.waitKey(1)
