@@ -39,14 +39,13 @@ def main() -> None:
                 cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=200)
             out = cam.requestOutput((1920, 1080), frame_type, fps=TARGET_FPS)
 
+            # Register topic for this device before starting pipeline (ensures linking)
+            suffix = f" [{device.getDeviceId()}]"
+            visualizer.addTopic("Camera" + suffix, out, "video")
+
             # Start and register
             pipeline.start()
             visualizer.registerPipeline(pipeline)
-
-            # Register topic for this device (use unique topic type per device)
-            suffix = f" [{device.getDeviceId()}]"
-            topic_type = f"video_{device.getDeviceId()}"
-            visualizer.addTopic("Camera" + suffix, out, topic_type)
 
         while True:
             key = visualizer.waitKey(1)
