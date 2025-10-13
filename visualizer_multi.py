@@ -95,11 +95,38 @@ class StreamDebugLogger(dai.node.ThreadedHostNode):
 
 
 # ---------------------------------------------------------------------------
+# Buffer: keep latest frame per device (similar to multi_devices.py)
+# ---------------------------------------------------------------------------
+class LatestFrameBuffer(dai.node.ThreadedHostNode):
+    def __init__(self, shared_store: dict, key: str) -> None:
+        super().__init__()
+        self.store = shared_store
+        self.key = key
+        self.input = self.createInput()
+        self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
+
+    def build(self, src: dai.Node.Output) -> "LatestFrameBuffer":
+        src.link(self.input)
+        return self
+
+    def run(self) -> None:
+        while self.isRunning():
+            try:
+                msg = self.input.get()
+                if msg is None:
+                    continue
+                # Keep only the most recent frame per device
+                self.store[self.key] = msg
+            except Exception:
+                time.sleep(0.05)
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 visualizer = dai.RemoteConnection(httpPort=8082)
 
 with contextlib.ExitStack() as stack:
+    latest_frames = {}
 
     deviceInfos = dai.Device.getAllAvailableDevices()
     print("=== Found devices: ", deviceInfos)
@@ -116,8 +143,9 @@ with contextlib.ExitStack() as stack:
 
         pipeline, cam_out = createPipeline(pipeline, socket)
 
-        # Attach debug logger to the same stream
+        # Attach debug logger and latest-frame buffer to the same stream
         dbg = StreamDebugLogger(device.getDeviceId()).build(cam_out)
+        buf = LatestFrameBuffer(latest_frames, device.getDeviceId()).build(cam_out)
 
         # Register topic per device without any annotations
         suffix = f" [{device.getDeviceId()}]"
