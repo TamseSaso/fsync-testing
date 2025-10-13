@@ -29,11 +29,10 @@ WARN_NO_FRAME_SEC = 3.0
 def createPipeline(
     pipeline: dai.Pipeline,
     socket: dai.CameraBoardSocket = dai.CameraBoardSocket.CAM_A,
-    frame_type: dai.ImgFrame.Type = dai.ImgFrame.Type.BGR888p,
 ):
     camRgb = pipeline.create(dai.node.Camera).build(socket, sensorFps=TARGET_FPS)
     output = camRgb.requestOutput(
-        (1920, 1080), frame_type, dai.ImgResizeMode.STRETCH
+        (640, 480), dai.ImgFrame.Type.NV12, dai.ImgResizeMode.STRETCH
     )
     if SET_MANUAL_EXPOSURE:
         camRgb.initialControl.setManualExposure(6000, 200)
@@ -101,6 +100,10 @@ class StreamDebugLogger(dai.node.ThreadedHostNode):
 visualizer = dai.RemoteConnection(httpPort=8082)
 
 with contextlib.ExitStack() as stack:
+
+    deviceInfos = dai.Device.getAllAvailableDevices()
+    print("=== Found devices: ", deviceInfos)
+
     for deviceInfo in DEVICE_INFOS:
         pipeline = stack.enter_context(dai.Pipeline(dai.Device(deviceInfo)))
         device = pipeline.getDefaultDevice()
@@ -111,13 +114,7 @@ with contextlib.ExitStack() as stack:
 
         socket = device.getConnectedCameras()[0]
 
-        # Choose frame type based on platform for best compatibility
-        platform = device.getPlatform().name
-        frame_type = (
-            dai.ImgFrame.Type.BGR888i if platform == "RVC4" else dai.ImgFrame.Type.BGR888p
-        )
-
-        pipeline, cam_out = createPipeline(pipeline, socket, frame_type)
+        pipeline, cam_out = createPipeline(pipeline, socket)
 
         # Attach debug logger to the same stream
         dbg = StreamDebugLogger(device.getDeviceId()).build(cam_out)
