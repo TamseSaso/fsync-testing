@@ -73,12 +73,15 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
         ("Sampled Panel (2s)", sampling_node.out, "panel"),
         ("LED Grid (32x32)", led_visualizer.out, "led"),
     ]
-    return topics
+    # Return topics and strong references to nodes to prevent premature GC
+    nodes = [cam, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
+    return topics, nodes
 
 
 with contextlib.ExitStack() as stack:
     queues = []  # reserved for future sync needs
     pipelines = []
+    liveness_refs = []  # keep strong references to host nodes per pipeline
 
     for deviceInfo in DEVICE_INFOS:
         pipeline = stack.enter_context(dai.Pipeline(dai.Device(deviceInfo)))
@@ -89,7 +92,7 @@ with contextlib.ExitStack() as stack:
         print("    Num of cameras:", len(device.getConnectedCameras()))
 
         socket = device.getConnectedCameras()[0]
-        topics = build_nodes_on_pipeline(pipeline, device, socket)
+        topics, nodes = build_nodes_on_pipeline(pipeline, device, socket)
 
         suffix = f" [{device.getDeviceId()}]"
         for title, out, topic_type in topics:
@@ -99,6 +102,7 @@ with contextlib.ExitStack() as stack:
         visualizer.registerPipeline(pipeline)
 
         pipelines.append(pipeline)
+        liveness_refs.append(nodes)
 
     # Unified visualizer loop; press 'q' to exit
     while True:
