@@ -76,7 +76,7 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
         .build(socket, sensorFps=TARGET_FPS)
     )
     node_out = camRgb.requestOutput(
-        (1920, 1080), dai.ImgFrame.Type.NV12, dai.ImgResizeMode.STRETCH
+        (1280, 720), dai.ImgFrame.Type.NV12, dai.ImgResizeMode.STRETCH
     )
     output = node_out.createOutputQueue()
     if SET_MANUAL_EXPOSURE:
