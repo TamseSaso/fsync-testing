@@ -101,10 +101,13 @@ with contextlib.ExitStack() as stack:
     latest_frames = {}
     fpsCounters = [FPSCounter() for _ in queues]
     receivedFrames = [False for _ in queues]
+    anyFrameEver = False
+    allDevicesReported = False
     while True:
         # -------------------------------------------------------------------
         # Collect the newest frame from each queue (non‑blocking)
         # -------------------------------------------------------------------
+        frameReceivedThisIter = False
         for idx, q in enumerate(queues):
             while q.has():
                 latest_frames[idx] = q.get()
@@ -112,6 +115,14 @@ with contextlib.ExitStack() as stack:
                     print("=== Received frame from", device_ids[idx])
                     receivedFrames[idx] = True
                 fpsCounters[idx].tick()
+                frameReceivedThisIter = True
+
+        if frameReceivedThisIter and not anyFrameEver:
+            print("=== At least one device is sending frames")
+            anyFrameEver = True
+        if not allDevicesReported and all(receivedFrames):
+            print("=== All devices are sending frames")
+            allDevicesReported = True
 
         # -------------------------------------------------------------------
         # Synchronise: we need at least one frame from every camera and their
