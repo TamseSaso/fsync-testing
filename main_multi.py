@@ -75,7 +75,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     # Note: Annotations are registered separately and will be automatically overlaid by the visualizer
     topics = [
         ("Video with AprilTags", source_out, "video"),
-        ("Video with AprilTags", apriltag_node.out, "video"),  # Annotations overlay
+        ("Video", apriltag_node.out, "video"),  # Annotations overlay
         ("Panel Crop", warp_node.out, "panel"),
         ("Sampled Panel (2s)", sampling_node.out, "panel"),
         ("LED Grid (32x32)", led_visualizer.out, "led"),
