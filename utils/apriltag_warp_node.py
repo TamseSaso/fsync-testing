@@ -71,7 +71,7 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         self.tag_size = tag_size  # Tag size in meters
         self.z_offset = z_offset  # Z-axis offset in meters
         self.margin = 0.000  # Hardcoded margin as fraction of height for top/bottom (1%)
-        self.padding_left = -0.10  # Hardcoded left padding as fraction of width 
+        self.padding_left = -0.0  # Hardcoded left padding as fraction of width 
         self.padding_right = -0.01  # Hardcoded right padding as fraction of width
         self._detector = None
         
