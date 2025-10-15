@@ -16,6 +16,8 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
 
     Input: dai.ImgFrame
     Output: dai.Buffer (annotations built via AnnotationHelper)
+
+    Optionally waits to emit annotations until a specified number of unique tags are detected in the current frame.
     """
 
     def __init__(
@@ -23,11 +25,12 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
         families: str = "tag36h11", 
         max_tags: int = 4, 
         quad_decimate: float = 0.8,
-        quad_sigma: float = 0.3,
+        quad_sigma: float = 0.5,
         decode_sharpening: float = 0.6,
         refine_edges: bool = True,
         decision_margin: float = 5.0,
-        persistence_seconds: float = 180.0
+        persistence_seconds: float = 240.0,
+        wait_for_n_tags: int | None = 4
     ) -> None:
         super().__init__()
 
@@ -45,6 +48,7 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
         self.refine_edges = refine_edges
         self.decision_margin = decision_margin
         self.persistence_seconds = persistence_seconds
+        self.wait_for_n_tags = wait_for_n_tags
         self._detector = None
         self._detector_highres = None  # persistent high-res fallback to avoid per-frame ctor/dtor
         
@@ -117,6 +121,14 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                 detections = self._detector_highres.detect(gray)
                 # Filter highres detections by decision_margin threshold
                 detections = [det for det in detections if det.decision_margin >= self.decision_margin]
+            
+            # If requested, wait until we see the desired number of unique tags in the *current* frame
+            if self.wait_for_n_tags is not None and self.wait_for_n_tags > 0:
+                unique_current_ids = {int(det.tag_id) for det in detections}
+                if len(unique_current_ids) < int(self.wait_for_n_tags):
+                    # Not enough tags yet; skip output this frame
+                    # (Continue the loop to wait for all required tags)
+                    continue
             
             # Update remembered tags with current detections
             detected_ids = set()
@@ -208,5 +220,3 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
             )
 
             self.out.send(annotations_msg)
-
-
