@@ -76,6 +76,14 @@ def initialize_argparser():
     )
 
     parser.add_argument(
+        "--apriltag_threshold",
+        help="Detection threshold for AprilTag detector (lower = more sensitive, default=50.0).",
+        required=False,
+        default=50.0,
+        type=float,
+    )
+
+    parser.add_argument(
         "--apriltag_size",
         help="AprilTag size in meters (e.g., 0.1 for 10cm tags).",
         required=False,
