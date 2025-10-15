@@ -70,9 +70,9 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         self.quad_decimate = quad_decimate if quad_decimate is not None and quad_decimate >= 0.5 else 1.0
         self.tag_size = tag_size  # Tag size in meters
         self.z_offset = z_offset  # Z-axis offset in meters
-        self.margin = 0.008  # Hardcoded margin as fraction of height for top/bottom (1%)
+        self.margin = 0.01  # Hardcoded margin as fraction of height for top/bottom (1%)
         self.padding_left = 0.0  # Hardcoded left padding as fraction of width 
-        self.padding_right = -0.012  # Hardcoded right padding as fraction of width
+        self.padding_right = -0.014  # Hardcoded right padding as fraction of width
         self._detector = None
         
         # Default camera parameters for 1920x1080 resolution (approximate values)
