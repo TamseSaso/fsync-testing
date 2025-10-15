@@ -100,13 +100,6 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
 
             all_detections = self._detector.detect(gray)
             
-            # Debug: Show ALL detections with their margins (only print once per second to avoid spam)
-            if len(all_detections) > 0:
-                if not hasattr(self, '_last_debug_time') or (current_time - self._last_debug_time) > 1.0:
-                    margins_str = ", ".join([f"ID{det.tag_id}:{det.decision_margin:.1f}" for det in all_detections])
-                    print(f"[AprilTag] All detections: {margins_str} | Threshold: {self.decision_margin}")
-                    self._last_debug_time = current_time
-            
             # Filter detections by decision_margin threshold
             detections = [det for det in all_detections if det.decision_margin >= self.decision_margin]
             
@@ -147,7 +140,6 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                 # Track first detection
                 if tag_id not in self._tag_first_seen:
                     self._tag_first_seen[tag_id] = current_time
-                    print(f"[AprilTag] ⭐ First detection of tag ID {tag_id}!")
             
             # Add persistent tags that weren't detected this frame but are still fresh
             persistent_detections = []
@@ -176,7 +168,6 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                 del self._remembered_tags[tag_id]
                 if tag_id in self._tag_first_seen:
                     del self._tag_first_seen[tag_id]
-                print(f"[AprilTag] 💤 Tag ID {tag_id} expired (not seen for {self.persistence_seconds}s)")
 
             # Build annotations from both current and persistent detections
             annotations = AnnotationHelper()
