@@ -23,7 +23,7 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
         families: str = "tag36h11", 
         max_tags: int = 4, 
         quad_decimate: float = 0.8,
-        quad_sigma: float = 0.0,
+        quad_sigma: float = 0.3,
         decode_sharpening: float = 0.6,
         refine_edges: bool = True,
         decision_margin: float = 5.0,
