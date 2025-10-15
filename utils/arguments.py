@@ -100,6 +100,14 @@ def initialize_argparser():
     )
 
     parser.add_argument(
+        "--apriltag_persistence",
+        help="How long to remember AprilTag positions after last detection in seconds (0 = no persistence).",
+        required=False,
+        default=5.0,
+        type=float,
+    )
+
+    parser.add_argument(
         "--apriltag_size",
         help="AprilTag size in meters (e.g., 0.1 for 10cm tags).",
         required=False,

@@ -24,9 +24,10 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
         max_tags: int = 4, 
         quad_decimate: float = 0.8,
         quad_sigma: float = 0.0,
-        decode_sharpening: float = 0.5,
+        decode_sharpening: float = 0.6,
         refine_edges: bool = True,
-        decision_margin: float = 5.0
+        decision_margin: float = 5.0,
+        persistence_seconds: float = 10.0
     ) -> None:
         super().__init__()
 
@@ -43,8 +44,14 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
         self.decode_sharpening = decode_sharpening
         self.refine_edges = refine_edges
         self.decision_margin = decision_margin
+        self.persistence_seconds = persistence_seconds
         self._detector = None
         self._detector_highres = None  # persistent high-res fallback to avoid per-frame ctor/dtor
+        
+        # Tag persistence: remember last known positions
+        # Format: {tag_id: {"corners": [...], "timestamp": time, "center": (x, y)}}
+        self._remembered_tags = {}
+        self._tag_first_seen = {}  # Track when each tag was first detected
 
     def build(self, frames: dai.Node.Output) -> "AprilTagAnnotationNode":
         frames.link(self.input)
@@ -80,6 +87,8 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
 
     def run(self) -> None:
         self._lazy_init()
+        import time
+        
         while self.isRunning():
             frame_msg: dai.ImgFrame = self.input.get()
             bgr = frame_msg.getCvFrame()
@@ -87,17 +96,19 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                 continue
 
             gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+            current_time = time.time()
 
             all_detections = self._detector.detect(gray)
             
+            # Debug: Show ALL detections with their margins (only print once per second to avoid spam)
+            if len(all_detections) > 0:
+                if not hasattr(self, '_last_debug_time') or (current_time - self._last_debug_time) > 1.0:
+                    margins_str = ", ".join([f"ID{det.tag_id}:{det.decision_margin:.1f}" for det in all_detections])
+                    print(f"[AprilTag] All detections: {margins_str} | Threshold: {self.decision_margin}")
+                    self._last_debug_time = current_time
+            
             # Filter detections by decision_margin threshold
-            detections = []
-            for det in all_detections:
-                if det.decision_margin >= self.decision_margin:
-                    detections.append(det)
-                # Uncomment below to debug decision margins:
-                # else:
-                #     print(f"Filtered tag ID {det.tag_id}: margin={det.decision_margin:.1f} < threshold={self.decision_margin}")
+            detections = [det for det in all_detections if det.decision_margin >= self.decision_margin]
             
             # Fallback: if none detected and decimate > 1.2, run a persistent high-res detector
             if not detections and (self.quad_decimate is None or self.quad_decimate > 1.2):
@@ -114,19 +125,89 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                 # Filter highres detections by decision_margin threshold
                 detections = [det for det in detections if det.decision_margin >= self.decision_margin]
             
-            # Limit to max_tags
-            detections = detections[: self.max_tags]
-
-            annotations = AnnotationHelper()
+            # Update remembered tags with current detections
+            detected_ids = set()
             img_h, img_w = gray.shape[:2]
+            
+            for det in detections:
+                tag_id = det.tag_id
+                detected_ids.add(tag_id)
+                corners = [(float(pt[0]), float(pt[1])) for pt in det.corners]
+                center = det.center
+                
+                # Remember this tag's position
+                self._remembered_tags[tag_id] = {
+                    "corners": corners,
+                    "center": center,
+                    "timestamp": current_time,
+                    "img_w": img_w,
+                    "img_h": img_h,
+                }
+                
+                # Track first detection
+                if tag_id not in self._tag_first_seen:
+                    self._tag_first_seen[tag_id] = current_time
+                    print(f"[AprilTag] ⭐ First detection of tag ID {tag_id}!")
+            
+            # Add persistent tags that weren't detected this frame but are still fresh
+            persistent_detections = []
+            expired_tags = []
+            
+            for tag_id, tag_info in self._remembered_tags.items():
+                age = current_time - tag_info["timestamp"]
+                
+                if tag_id not in detected_ids:
+                    if age <= self.persistence_seconds:
+                        # Tag is still fresh, use remembered position
+                        persistent_detections.append({
+                            "tag_id": tag_id,
+                            "corners": tag_info["corners"],
+                            "center": tag_info["center"],
+                            "img_w": tag_info["img_w"],
+                            "img_h": tag_info["img_h"],
+                            "is_persistent": True,
+                        })
+                    else:
+                        # Tag has expired
+                        expired_tags.append(tag_id)
+            
+            # Clean up expired tags
+            for tag_id in expired_tags:
+                del self._remembered_tags[tag_id]
+                if tag_id in self._tag_first_seen:
+                    del self._tag_first_seen[tag_id]
+                print(f"[AprilTag] 💤 Tag ID {tag_id} expired (not seen for {self.persistence_seconds}s)")
 
+            # Build annotations from both current and persistent detections
+            annotations = AnnotationHelper()
+
+            # Add current detections
             for det in detections:
                 corners = [(float(pt[0]), float(pt[1])) for pt in det.corners]
                 xmin, ymin, xmax, ymax = self._norm_rect(corners, img_w, img_h)
                 annotations.draw_rectangle((xmin, ymin), (xmax, ymax))
-
                 annotations.draw_text(
                     text=f"ID {det.tag_id}",
+                    position=(min(max(0.0, xmin + 0.005), 0.98), max(0.0, ymin + 0.02)),
+                    size=18,
+                )
+            
+            # Add persistent detections (shown with different style)
+            for persist_det in persistent_detections:
+                xmin, ymin, xmax, ymax = self._norm_rect(
+                    persist_det["corners"], 
+                    persist_det["img_w"], 
+                    persist_det["img_h"]
+                )
+                # Draw with dashed/lighter appearance (using semi-transparent color)
+                from depthai_nodes.constants import PRIMARY_COLOR
+                persistent_color = (PRIMARY_COLOR[0], PRIMARY_COLOR[1], PRIMARY_COLOR[2], 0.5)  # 50% transparent
+                annotations.draw_rectangle(
+                    (xmin, ymin), (xmax, ymax),
+                    outline_color=persistent_color
+                )
+                annotations.draw_text(
+                    text=f"ID {persist_det['tag_id']} 📍",  # Pin emoji indicates persistent
                     position=(min(max(0.0, xmin + 0.005), 0.98), max(0.0, ymin + 0.02)),
                     size=18,
                 )
