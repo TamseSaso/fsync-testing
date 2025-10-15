@@ -38,7 +38,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     frame_type = (
         dai.ImgFrame.Type.BGR888i if platform == "RVC4" else dai.ImgFrame.Type.BGR888p
     )
-    fps_limit = args.fps_limit if args.fps_limit else (10 if platform == "RVC2" else 30)
+    fps_limit = args.fps_limit if args.fps_limit else TARGET_FPS
 
     cam = pipeline.create(dai.node.Camera).build(socket)
     cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=200)
@@ -80,7 +80,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     ]
     
     # Create a separate sync queue for timestamp monitoring (non-blocking)
-    sync_queue = video_composer.out.createOutputQueue()
+    sync_queue = video_composer.out.createOutputQueue(1, False)
     
     # Return topics, sync queue, and strong references to nodes to prevent premature GC
     nodes = [cam, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
@@ -137,6 +137,7 @@ with contextlib.ExitStack() as stack:
                 latest_sync_frames[idx] = sync_queue.get()
                 if not receivedFrames[idx]:
                     print(f"=== Received frame from {device_ids[idx]}")
+                    latest_sync_frames.pop(idx, None)
                     receivedFrames[idx] = True
                 frameReceivedThisIter = True
 
@@ -154,13 +155,15 @@ with contextlib.ExitStack() as stack:
                 for f in latest_sync_frames.values()
             ]
             delta = max(ts_values) - min(ts_values)
-            
+
             # Track sync status
             if delta <= SYNC_THRESHOLD_SEC:
                 sync_stats["in_sync"] += 1
-                latest_sync_frames.clear()
             else:
                 sync_stats["out_of_sync"] += 1
+
+            # Always clear to avoid building latency/backlog
+            latest_sync_frames.clear()
             
             # Report sync status every 5 seconds
             if time.time() - last_sync_report_time > 5.0:
@@ -174,8 +177,7 @@ with contextlib.ExitStack() as stack:
                 last_sync_report_time = time.time()
         
         # Visualizer update
-        key = visualizer.waitKey(1)
+        key = visualizer.waitKey(0)
         if key == ord("q"):
             break
-
 
