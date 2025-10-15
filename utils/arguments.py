@@ -69,9 +69,25 @@ def initialize_argparser():
 
     parser.add_argument(
         "--apriltag_decimate",
-        help="Decimation factor for AprilTag detector (higher = faster, fewer detections).",
+        help="Decimation factor for AprilTag detector (lower = more sensitive, 0.5-4.0).",
         required=False,
         default=1.0,
+        type=float,
+    )
+
+    parser.add_argument(
+        "--apriltag_sigma",
+        help="Gaussian blur sigma for AprilTag edge detection (0.0 = no blur, higher = more blur).",
+        required=False,
+        default=0.0,
+        type=float,
+    )
+
+    parser.add_argument(
+        "--apriltag_sharpening",
+        help="Sharpening factor during AprilTag decoding (0.0-1.0, higher = more sharpening).",
+        required=False,
+        default=0.25,
         type=float,
     )
 

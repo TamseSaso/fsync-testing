@@ -18,7 +18,15 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
     Output: dai.Buffer (annotations built via AnnotationHelper)
     """
 
-    def __init__(self, families: str = "tag36h11", max_tags: int = 4, quad_decimate: float = 2.0) -> None:
+    def __init__(
+        self, 
+        families: str = "tag36h11", 
+        max_tags: int = 4, 
+        quad_decimate: float = 0.8,
+        quad_sigma: float = 0.5,
+        decode_sharpening: float = 0.5,
+        refine_edges: bool = True
+    ) -> None:
         super().__init__()
 
         self.input = self.createInput()
@@ -30,6 +38,9 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
         self.families = families
         self.max_tags = max_tags
         self.quad_decimate = quad_decimate
+        self.quad_sigma = quad_sigma
+        self.decode_sharpening = decode_sharpening
+        self.refine_edges = refine_edges
         self._detector = None
         self._detector_highres = None  # persistent high-res fallback to avoid per-frame ctor/dtor
 
@@ -49,9 +60,9 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                 families=self.families,
                 nthreads=2,
                 quad_decimate=safe_decimate,
-                quad_sigma=0.0,
-                refine_edges=True,
-                decode_sharpening=0.25,
+                quad_sigma=self.quad_sigma,
+                refine_edges=self.refine_edges,
+                decode_sharpening=self.decode_sharpening,
             )
             self.quad_decimate = safe_decimate
 
@@ -83,9 +94,9 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                         families=self.families,
                         nthreads=2,
                         quad_decimate=1.0,
-                        quad_sigma=0.0,
-                        refine_edges=True,
-                        decode_sharpening=0.25,
+                        quad_sigma=self.quad_sigma,
+                        refine_edges=self.refine_edges,
+                        decode_sharpening=self.decode_sharpening,
                     )
                 detections = self._detector_highres.detect(gray)[: self.max_tags]
 
