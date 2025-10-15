@@ -93,9 +93,9 @@ def initialize_argparser():
 
     parser.add_argument(
         "--apriltag_decision_margin",
-        help="Minimum decision margin for accepting AprilTag detections (lower = more detections, 5-50).",
+        help="Minimum decision margin for accepting AprilTag detections (lower = more detections, 0-100).",
         required=False,
-        default=10.0,
+        default=5.0,
         type=float,
     )
 

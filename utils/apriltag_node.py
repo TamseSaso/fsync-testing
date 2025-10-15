@@ -26,7 +26,7 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
         quad_sigma: float = 0.0,
         decode_sharpening: float = 0.5,
         refine_edges: bool = True,
-        decision_margin: float = 10.0
+        decision_margin: float = 5.0
     ) -> None:
         super().__init__()
 
@@ -63,9 +63,8 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                 nthreads=2,
                 quad_decimate=safe_decimate,
                 quad_sigma=self.quad_sigma,
-                refine_edges=self.refine_edges,
+                refine_edges=int(self.refine_edges),
                 decode_sharpening=self.decode_sharpening,
-                decision_margin=self.decision_margin,
             )
             self.quad_decimate = safe_decimate
 
@@ -89,7 +88,17 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
 
             gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
-            detections = self._detector.detect(gray)[: self.max_tags]
+            all_detections = self._detector.detect(gray)
+            
+            # Filter detections by decision_margin threshold
+            detections = []
+            for det in all_detections:
+                if det.decision_margin >= self.decision_margin:
+                    detections.append(det)
+                # Uncomment below to debug decision margins:
+                # else:
+                #     print(f"Filtered tag ID {det.tag_id}: margin={det.decision_margin:.1f} < threshold={self.decision_margin}")
+            
             # Fallback: if none detected and decimate > 1.2, run a persistent high-res detector
             if not detections and (self.quad_decimate is None or self.quad_decimate > 1.2):
                 if self._detector_highres is None:
@@ -98,11 +107,15 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                         nthreads=2,
                         quad_decimate=1.0,
                         quad_sigma=self.quad_sigma,
-                        refine_edges=self.refine_edges,
+                        refine_edges=int(self.refine_edges),
                         decode_sharpening=self.decode_sharpening,
-                        decision_margin=self.decision_margin,
                     )
-                detections = self._detector_highres.detect(gray)[: self.max_tags]
+                detections = self._detector_highres.detect(gray)
+                # Filter highres detections by decision_margin threshold
+                detections = [det for det in detections if det.decision_margin >= self.decision_margin]
+            
+            # Limit to max_tags
+            detections = detections[: self.max_tags]
 
             annotations = AnnotationHelper()
             img_h, img_w = gray.shape[:2]
