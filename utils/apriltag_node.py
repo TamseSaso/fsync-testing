@@ -18,7 +18,7 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
     Output: dai.Buffer (annotations built via AnnotationHelper)
     """
 
-    def __init__(self, families: str = "tag36h11", max_tags: int = 4, quad_decimate: float = 0.5) -> None:
+    def __init__(self, families: str = "tag36h11", max_tags: int = 4, quad_decimate: float = 2.0) -> None:
         super().__init__()
 
         self.input = self.createInput()
