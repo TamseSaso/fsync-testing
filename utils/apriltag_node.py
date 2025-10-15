@@ -199,9 +199,8 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                     persist_det["img_w"], 
                     persist_det["img_h"]
                 )
-                # Draw with dashed/lighter appearance (using semi-transparent color)
-                from depthai_nodes.constants import PRIMARY_COLOR
-                persistent_color = (PRIMARY_COLOR[0], PRIMARY_COLOR[1], PRIMARY_COLOR[2], 0.5)  # 50% transparent
+                # Draw with semi-transparent color for persistent tags
+                persistent_color = (0.0, 1.0, 0.0, 0.5)  # Green with 50% transparency (R, G, B, A)
                 annotations.draw_rectangle(
                     (xmin, ymin), (xmax, ymax),
                     outline_color=persistent_color
