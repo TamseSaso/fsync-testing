@@ -27,7 +27,7 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
         decode_sharpening: float = 0.6,
         refine_edges: bool = True,
         decision_margin: float = 5.0,
-        persistence_seconds: float = 10.0
+        persistence_seconds: float = 60.0
     ) -> None:
         super().__init__()
 
