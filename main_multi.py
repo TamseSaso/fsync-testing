@@ -179,7 +179,7 @@ with contextlib.ExitStack() as stack:
                 last_sync_report_time = time.time()
         
         # Visualizer update
-        key = visualizer.waitKey(0)
+        key = visualizer.waitKey(1)
         if key == ord("q"):
             break
 
