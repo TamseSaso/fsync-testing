@@ -1,5 +1,6 @@
 import contextlib
 import depthai as dai
+import time
 
 from utils.arguments import initialize_argparser
 from utils.apriltag_node import AprilTagAnnotationNode
@@ -10,12 +11,15 @@ from utils.led_grid_visualizer import LEDGridVisualizer
 from utils.video_annotation_composer import VideoAnnotationComposer
 
 
-# Use the same per-device construction style as multi_devices.py
 # Define two devices here; put master first. Update to your IPs/IDs.
 DEVICE_INFOS = [
     dai.DeviceInfo("10.12.211.82"),
     dai.DeviceInfo("10.12.211.84"),
 ]
+
+# Synchronization settings
+TARGET_FPS = 10  # Will be adjusted based on device platform
+SYNC_THRESHOLD_SEC = 1.0 / (2 * TARGET_FPS)  # Max drift to accept as "in sync"
 
 # Parse arguments used by the processing nodes (panel, apriltag, etc.)
 _, args = initialize_argparser()
@@ -28,7 +32,7 @@ visualizer = dai.RemoteConnection(httpPort=8082)
 def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: dai.CameraBoardSocket):
     """Build the same processing nodes as main.py on the given pipeline/socket.
 
-    Returns a list of (title, node_out, topic_type) for visualizer registration.
+    Returns topics with queues for synchronization, and node references.
     """
     platform = device.getPlatform().name
     frame_type = (
@@ -67,11 +71,12 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     # Compose video + apriltag annotations
     video_composer = VideoAnnotationComposer().build(source_out, apriltag_node.out)
 
+    # Create queues for synchronized outputs - we'll use video_composer as the sync reference
     topics = [
-        ("Video with AprilTags", video_composer.out, "video"),
-        ("Panel Crop", warp_node.out, "panel"),
-        ("Sampled Panel (2s)", sampling_node.out, "panel"),
-        ("LED Grid (32x32)", led_visualizer.out, "led"),
+        ("Video with AprilTags", video_composer.out.createOutputQueue(), "video"),
+        ("Panel Crop", warp_node.out.createOutputQueue(), "panel"),
+        ("Sampled Panel (2s)", sampling_node.out.createOutputQueue(), "panel"),
+        ("LED Grid (32x32)", led_visualizer.out.createOutputQueue(), "led"),
     ]
     # Return topics and strong references to nodes to prevent premature GC
     nodes = [cam, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
@@ -79,7 +84,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
 
 
 with contextlib.ExitStack() as stack:
-    queues = []  # reserved for future sync needs
+    device_queues = []  # List of dicts: {"device_id": str, "sync_queue": queue, "topics": [(title, queue, type)]}
     pipelines = []
     liveness_refs = []  # keep strong references to host nodes per pipeline
 
@@ -94,18 +99,70 @@ with contextlib.ExitStack() as stack:
         socket = device.getConnectedCameras()[0]
         topics, nodes = build_nodes_on_pipeline(pipeline, device, socket)
 
-        suffix = f" [{device.getDeviceId()}]"
-        for title, out, topic_type in topics:
-            visualizer.addTopic(title + suffix, out, topic_type)
-
         pipeline.start()
-        visualizer.registerPipeline(pipeline)
+        
+        # Store queues for synchronization - first topic (Video) is the sync reference
+        device_queues.append({
+            "device_id": device.getDeviceId(),
+            "sync_queue": topics[0][1],  # Video with AprilTags queue
+            "topics": topics,
+        })
 
         pipelines.append(pipeline)
         liveness_refs.append(nodes)
 
-    # Unified visualizer loop; press 'q' to exit
+    # Register all topics with visualizer after starting pipelines
+    for dev_q in device_queues:
+        suffix = f" [{dev_q['device_id']}]"
+        for title, queue, topic_type in dev_q["topics"]:
+            visualizer.addTopic(title + suffix, queue, topic_type)
+    
+    for pipeline in pipelines:
+        visualizer.registerPipeline(pipeline)
+
+    # Synchronization state
+    latest_sync_frames = {}  # key = device_idx, value = sync frame
+    receivedFrames = [False] * len(device_queues)
+    anyFrameEver = False
+    allDevicesReported = False
+    
+    print(f"=== Starting synchronized visualization (threshold: {SYNC_THRESHOLD_SEC*1000:.2f}ms)")
+    
+    # Unified visualizer loop with synchronization
     while True:
+        # Collect newest frame from each device's sync queue (non-blocking)
+        frameReceivedThisIter = False
+        for idx, dev_q in enumerate(device_queues):
+            sync_queue = dev_q["sync_queue"]
+            while sync_queue.has():
+                latest_sync_frames[idx] = sync_queue.get()
+                if not receivedFrames[idx]:
+                    print(f"=== Received frame from {dev_q['device_id']}")
+                    receivedFrames[idx] = True
+                frameReceivedThisIter = True
+
+        if frameReceivedThisIter and not anyFrameEver:
+            print("=== At least one device is sending frames")
+            anyFrameEver = True
+        if not allDevicesReported and all(receivedFrames):
+            print("=== All devices are sending frames - synchronization active")
+            allDevicesReported = True
+
+        # Check synchronization: need at least one frame from every device
+        if len(latest_sync_frames) == len(device_queues):
+            ts_values = [
+                f.getTimestamp(dai.CameraExposureOffset.END).total_seconds() 
+                for f in latest_sync_frames.values()
+            ]
+            delta = max(ts_values) - min(ts_values)
+            
+            if delta <= SYNC_THRESHOLD_SEC:
+                # Frames are synchronized! Clear the buffer to wait for next batch
+                # The visualizer will handle displaying the queued frames
+                latest_sync_frames.clear()
+            # If not in sync, keep the old frames and wait for new ones to arrive
+        
+        # Visualizer update
         key = visualizer.waitKey(1)
         if key == ord("q"):
             break
