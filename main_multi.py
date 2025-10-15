@@ -72,17 +72,15 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     video_composer = VideoAnnotationComposer().build(source_out, apriltag_node.out)
 
     # Topics for visualizer (using Node.Output objects)
-    # Note: Annotations are registered separately and will be automatically overlaid by the visualizer
     topics = [
-        ("Video with AprilTags", source_out, "video"),
-        ("Video", apriltag_node.out, "video"),  # Annotations overlay
+        ("Video with AprilTags", video_composer.out, "video"),
         ("Panel Crop", warp_node.out, "panel"),
         ("Sampled Panel (2s)", sampling_node.out, "panel"),
         ("LED Grid (32x32)", led_visualizer.out, "led"),
     ]
     
     # Create a separate sync queue for timestamp monitoring (non-blocking)
-    sync_queue = source_out.createOutputQueue(1, False)
+    sync_queue = video_composer.out.createOutputQueue(1, False)
     
     # Return topics, sync queue, and strong references to nodes to prevent premature GC
     nodes = [cam, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
@@ -179,7 +177,9 @@ with contextlib.ExitStack() as stack:
                 last_sync_report_time = time.time()
         
         # Visualizer update
-        key = visualizer.waitKey(1)
-        if key == ord("q"):
-            break
+        while True:
+            key = visualizer.waitKey(1)
+            if key == ord("q"):
+                print("Got q key. Exiting...")
+                break
 

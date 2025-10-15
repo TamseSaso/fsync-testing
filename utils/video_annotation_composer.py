@@ -59,10 +59,8 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
                 # Apply annotations if available
                 if self.latest_annotations is not None:
                     try:
-                        # The annotations are stored as a serialized buffer.
-                        # In this simplified version, skip parsing and just forward the video.
-                        # This avoids spawning additional AprilTag detectors on the host.
-                        pass
+                        # Parse and draw the annotations using AnnotationHelper
+                        bgr_frame = AnnotationHelper.draw(bgr_frame, self.latest_annotations)
                     except Exception as e:
                         print(f"Warning: Failed to process annotations: {e}")
                 
@@ -80,8 +78,3 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
             except Exception as e:
                 print(f"Error in VideoAnnotationComposer: {e}")
                 continue
-
-    def _apply_annotations_to_frame(self, frame: np.ndarray, annotations_msg: dai.Buffer) -> None:
-        # Intentionally left as no-op to avoid redundant apriltag detection and
-        # lifetime issues in dependent native libraries.
-        return
