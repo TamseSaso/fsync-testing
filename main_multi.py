@@ -49,7 +49,6 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
         families=args.apriltag_families,
         max_tags=args.apriltag_max,
         quad_decimate=args.apriltag_decimate,
-        decision_margin=args.apriltag_threshold,
     ).build(source_out)
 
     # Perspective-rectified panel crop

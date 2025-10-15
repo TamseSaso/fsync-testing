@@ -18,7 +18,7 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
     Output: dai.Buffer (annotations built via AnnotationHelper)
     """
 
-    def __init__(self, families: str = "tag36h11", max_tags: int = 4, quad_decimate: float = 1.0, decision_margin: float = 30.0) -> None:
+    def __init__(self, families: str = "tag36h11", max_tags: int = 4, quad_decimate: float = 0.5) -> None:
         super().__init__()
 
         self.input = self.createInput()
@@ -30,7 +30,6 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
         self.families = families
         self.max_tags = max_tags
         self.quad_decimate = quad_decimate
-        self.decision_margin = decision_margin  # Lower = more sensitive detection
         self._detector = None
         self._detector_highres = None  # persistent high-res fallback to avoid per-frame ctor/dtor
 
@@ -53,7 +52,6 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                 quad_sigma=0.0,
                 refine_edges=True,
                 decode_sharpening=0.25,
-                decision_margin=self.decision_margin,
             )
             self.quad_decimate = safe_decimate
 
@@ -88,7 +86,6 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                         quad_sigma=0.0,
                         refine_edges=True,
                         decode_sharpening=0.25,
-                        decision_margin=self.decision_margin,
                     )
                 detections = self._detector_highres.detect(gray)[: self.max_tags]
 

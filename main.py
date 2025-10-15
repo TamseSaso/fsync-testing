@@ -53,7 +53,6 @@ with dai.Pipeline(device) as pipeline:
         families=args.apriltag_families,
         max_tags=args.apriltag_max,
         quad_decimate=args.apriltag_decimate,
-        decision_margin=args.apriltag_threshold,
     )
     apriltag_node.build(source_out)
 
