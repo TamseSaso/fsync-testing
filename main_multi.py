@@ -51,6 +51,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
         quad_decimate=args.apriltag_decimate,
         quad_sigma=args.apriltag_sigma,
         decode_sharpening=args.apriltag_sharpening,
+        decision_margin=args.apriltag_decision_margin,
     ).build(source_out)
 
     # Perspective-rectified panel crop

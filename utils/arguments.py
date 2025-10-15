@@ -87,7 +87,15 @@ def initialize_argparser():
         "--apriltag_sharpening",
         help="Sharpening factor during AprilTag decoding (0.0-1.0, higher = more sharpening).",
         required=False,
-        default=0.25,
+        default=0.5,
+        type=float,
+    )
+
+    parser.add_argument(
+        "--apriltag_decision_margin",
+        help="Minimum decision margin for accepting AprilTag detections (lower = more detections, 5-50).",
+        required=False,
+        default=10.0,
         type=float,
     )
 

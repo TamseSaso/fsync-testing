@@ -55,6 +55,7 @@ with dai.Pipeline(device) as pipeline:
         quad_decimate=args.apriltag_decimate,
         quad_sigma=args.apriltag_sigma,
         decode_sharpening=args.apriltag_sharpening,
+        decision_margin=args.apriltag_decision_margin,
     )
     apriltag_node.build(source_out)
 
