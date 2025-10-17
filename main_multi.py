@@ -70,10 +70,13 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
         z_offset=args.z_offset,
     ).build(source_out)
 
-    # Sample every 2 seconds from the panel crop
+    # Latest-only sampler at a fixed interval so analyzer compares at a bounded rate
     sampling_node = FrameSamplingNode(sample_interval_seconds=2.0).build(warp_node.out)
+    # Ensure the sampler always picks the newest crop and never builds backlog
+    sampling_node.input.setQueueSize(1)
+    sampling_node.input.setBlocking(False)
 
-    # Analyze LED grid, then visualize it
+    # Analyze LED grid on the sampled (latest) crop
     led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.3).build(sampling_node.out)
     led_visualizer = LEDGridVisualizer(output_size=(1024, 1024)).build(led_analyzer.out)
 
@@ -84,12 +87,12 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     topics = [
         ("Video with AprilTags", video_composer.out, "video"),
         ("Panel Crop", warp_node.out, "panel"),
-        ("Sampled Panel (2s)", sampling_node.out, "panel"),
+        ("Sampled Panel (latest @2s)", sampling_node.out, "panel"),
         ("LED Grid (32x32)", led_visualizer.out, "led"),
     ]
     
     # Create a separate sync queue for timestamp monitoring (non-blocking)
-    sync_queue = video_composer.out.createOutputQueue(1, False)
+    sync_queue = sampling_node.out.createOutputQueue(1, False)
     
     # Return topics, sync queue, and strong references to nodes to prevent premature GC
     nodes = [cam, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
