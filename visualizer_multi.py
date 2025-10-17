@@ -60,11 +60,8 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
         pipeline.create(dai.node.Camera)
         .build(socket, sensorFps=TARGET_FPS)
     )
-    manip = pipeline.create(dai.node.ImageManip)
-    manip.initialConfig.setHorizontalFlip(True)
-    manip.initialConfig.setVerticalFlip(True)
-    camRgb.preview.link(manip.inputImage)
-    node_out = manip.requestOutput(
+    camRgb.setImageOrientation(dai.CameraImageOrientation.ROTATE_180_DEG)
+    node_out = camRgb.requestOutput(
         (1920, 1080), dai.ImgFrame.Type.NV12, dai.ImgResizeMode.STRETCH
     )
     output = node_out.createOutputQueue()
