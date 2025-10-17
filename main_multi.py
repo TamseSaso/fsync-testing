@@ -135,6 +135,9 @@ with contextlib.ExitStack() as stack:
     for p in pipelines:
         visualizer.registerPipeline(p)
 
+    print("=== Arming global ticker...")
+    GLOBAL_TICKER.start()
+
     # Synchronization state
     latest_sync_frames = {}  # key = device_idx, value = sync frame
     receivedFrames = [False] * len(sync_queues)
@@ -159,9 +162,6 @@ with contextlib.ExitStack() as stack:
     # Clear any buffered frames to start in lockstep
     latest_sync_frames.clear()
     print(f"=== All devices ready — starting synchronized visualization (threshold: {SYNC_THRESHOLD_SEC*1000:.2f}ms)")
-    
-    # Arm the global ticker so both samplers tick together
-    GLOBAL_TICKER.start()
     
     # Unified visualizer loop with synchronization monitoring
     while True:
