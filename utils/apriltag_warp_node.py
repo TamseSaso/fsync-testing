@@ -73,6 +73,7 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         self.margin = 0.01  # Hardcoded margin as fraction of height for top/bottom (1%)
         self.padding_left = -0.008  # Hardcoded left padding as fraction of width 
         self.padding_right = -0.01  # Hardcoded right padding as fraction of width
+        self.bottom_right_y_offset = -0.005  # Fraction of height; negative lifts only the bottom-right corner up
         self._detector = None
         
         # Default camera parameters for 1920x1080 resolution (approximate values)
@@ -153,13 +154,14 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         padding_left_pixels = self.padding_left * self.out_w
         padding_right_pixels = self.padding_right * self.out_w
         
-        # Create destination quad with margin on top/bottom and separate padding on left/right
+        # Only bottom-right corner is vertically offset
+        br_y_offset_pixels = self.bottom_right_y_offset * self.out_h
         dst_quad = np.array(
             [
                 [padding_left_pixels, margin_pixels],  # Top-left with left padding and top margin
-                [self.out_w - 1.0 - padding_right_pixels, margin_pixels],  # Top-right with right padding and top margin  
-                [self.out_w - 1.0 - padding_right_pixels, self.out_h - 1.0 - margin_pixels],  # Bottom-right with right padding and bottom margin
-                [padding_left_pixels, self.out_h - 1.0 - margin_pixels],  # Bottom-left with left padding and bottom margin
+                [self.out_w - 1.0 - padding_right_pixels, margin_pixels],  # Top-right unchanged
+                [self.out_w - 1.0 - padding_right_pixels, self.out_h - 1.0 - margin_pixels + br_y_offset_pixels],  # Bottom-right lifted/dropped by offset
+                [padding_left_pixels, self.out_h - 1.0 - margin_pixels],  # Bottom-left unchanged
             ],
             dtype=np.float32,
         )
