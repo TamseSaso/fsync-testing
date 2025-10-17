@@ -36,9 +36,13 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
 
         self.input = self.createInput()
         self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
+        self.input.setQueueSize(1)
+        self.input.setBlocking(False)
 
         self.out = self.createOutput()
         self.out.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, True)])
+        self.out.setQueueSize(1)
+        self.out.setBlocking(False)
 
         self.families = families
         self.max_tags = max_tags
@@ -94,7 +98,29 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
         import time
         
         while self.isRunning():
-            frame_msg: dai.ImgFrame = self.input.get()
+            # Drain to latest frame (non-blocking)
+            frame_msg: dai.ImgFrame | None = None
+            try:
+                # Prefer tryGet() if available
+                while True:
+                    try:
+                        m = self.input.tryGet()
+                    except AttributeError:
+                        # Fallback if tryGet() isn't available on this binding
+                        if not self.input.has():
+                            break
+                        m = self.input.get()
+                    if m is None:
+                        break
+                    frame_msg = m
+            except Exception:
+                frame_msg = None
+
+            if frame_msg is None:
+                # No new frame right now; yield a bit to avoid busy spinning
+                time.sleep(0.001)
+                continue
+
             bgr = frame_msg.getCvFrame()
             if bgr is None:
                 continue
@@ -103,10 +129,10 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
             current_time = time.time()
 
             all_detections = self._detector.detect(gray)
-            
+
             # Filter detections by decision_margin threshold
             detections = [det for det in all_detections if det.decision_margin >= self.decision_margin]
-            
+
             # Fallback: if none detected and decimate > 1.2, run a persistent high-res detector
             if not detections and (self.quad_decimate is None or self.quad_decimate > 1.2):
                 if self._detector_highres is None:
@@ -119,28 +145,25 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                         decode_sharpening=self.decode_sharpening,
                     )
                 detections = self._detector_highres.detect(gray)
-                # Filter highres detections by decision_margin threshold
                 detections = [det for det in detections if det.decision_margin >= self.decision_margin]
-            
+
             # If requested, wait until we see the desired number of unique tags in the *current* frame
             if self.wait_for_n_tags is not None and self.wait_for_n_tags > 0:
                 unique_current_ids = {int(det.tag_id) for det in detections}
                 if len(unique_current_ids) < int(self.wait_for_n_tags):
                     # Not enough tags yet; skip output this frame
-                    # (Continue the loop to wait for all required tags)
                     continue
-            
+
             # Update remembered tags with current detections
             detected_ids = set()
             img_h, img_w = gray.shape[:2]
-            
+
             for det in detections:
                 tag_id = det.tag_id
                 detected_ids.add(tag_id)
                 corners = [(float(pt[0]), float(pt[1])) for pt in det.corners]
                 center = det.center
-                
-                # Remember this tag's position
+
                 self._remembered_tags[tag_id] = {
                     "corners": corners,
                     "center": center,
@@ -148,21 +171,19 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                     "img_w": img_w,
                     "img_h": img_h,
                 }
-                
-                # Track first detection
+
                 if tag_id not in self._tag_first_seen:
                     self._tag_first_seen[tag_id] = current_time
-            
+
             # Add persistent tags that weren't detected this frame but are still fresh
             persistent_detections = []
             expired_tags = []
-            
+
             for tag_id, tag_info in self._remembered_tags.items():
                 age = current_time - tag_info["timestamp"]
-                
+
                 if tag_id not in detected_ids:
                     if age <= self.persistence_seconds:
-                        # Tag is still fresh, use remembered position
                         persistent_detections.append({
                             "tag_id": tag_id,
                             "corners": tag_info["corners"],
@@ -172,10 +193,8 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                             "is_persistent": True,
                         })
                     else:
-                        # Tag has expired
                         expired_tags.append(tag_id)
-            
-            # Clean up expired tags
+
             for tag_id in expired_tags:
                 del self._remembered_tags[tag_id]
                 if tag_id in self._tag_first_seen:
@@ -184,7 +203,6 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
             # Build annotations from both current and persistent detections
             annotations = AnnotationHelper()
 
-            # Add current detections
             for det in detections:
                 corners = [(float(pt[0]), float(pt[1])) for pt in det.corners]
                 xmin, ymin, xmax, ymax = self._norm_rect(corners, img_w, img_h)
@@ -194,22 +212,17 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                     position=(min(max(0.0, xmin + 0.005), 0.98), max(0.0, ymin + 0.02)),
                     size=18,
                 )
-            
-            # Add persistent detections (shown with different style)
+
             for persist_det in persistent_detections:
                 xmin, ymin, xmax, ymax = self._norm_rect(
-                    persist_det["corners"], 
-                    persist_det["img_w"], 
-                    persist_det["img_h"]
+                    persist_det["corners"],
+                    persist_det["img_w"],
+                    persist_det["img_h"],
                 )
-                # Draw with semi-transparent color for persistent tags
-                persistent_color = (0.0, 1.0, 0.0, 0.5)  # Green with 50% transparency (R, G, B, A)
-                annotations.draw_rectangle(
-                    (xmin, ymin), (xmax, ymax),
-                    outline_color=persistent_color
-                )
+                persistent_color = (0.0, 1.0, 0.0, 0.5)
+                annotations.draw_rectangle((xmin, ymin), (xmax, ymax), outline_color=persistent_color)
                 annotations.draw_text(
-                    text=f"ID {persist_det['tag_id']} 📍",  # Pin emoji indicates persistent
+                    text=f"ID {persist_det['tag_id']} 📍",
                     position=(min(max(0.0, xmin + 0.005), 0.98), max(0.0, ymin + 0.02)),
                     size=18,
                 )

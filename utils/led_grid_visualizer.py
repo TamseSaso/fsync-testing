@@ -16,9 +16,13 @@ class LEDGridVisualizer(dai.node.ThreadedHostNode):
         
         self.input = self.createInput()
         self.input.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, True)])
+        self.input.setQueueSize(1)
+        self.input.setBlocking(False)
         
         self.out = self.createOutput()
         self.out.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
+        self.out.setQueueSize(1)
+        self.out.setBlocking(False)
         
         self.output_w, self.output_h = output_size
         self.grid_size = grid_size
@@ -129,8 +133,26 @@ class LEDGridVisualizer(dai.node.ThreadedHostNode):
         
         while self.isRunning():
             try:
-                buffer_msg: dai.Buffer = self.input.get()
+                # Drain to latest buffer (non-blocking)
+                buffer_msg: dai.Buffer | None = None
+                try:
+                    while True:
+                        try:
+                            m = self.input.tryGet()
+                        except AttributeError:
+                            if not self.input.has():
+                                break
+                            m = self.input.get()
+                        if m is None:
+                            break
+                        buffer_msg = m
+                except Exception:
+                    buffer_msg = None
+
                 if buffer_msg is None:
+                    # No new buffer yet; yield briefly to avoid busy spin
+                    import time as _t
+                    _t.sleep(0.001)
                     continue
                 
                 # Extract grid state data, decoded values, and metadata from buffer

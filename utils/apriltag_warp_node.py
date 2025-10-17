@@ -60,9 +60,13 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
 
         self.input = self.createInput()
         self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
+        self.input.setQueueSize(1)
+        self.input.setBlocking(False)
 
         self.out = self.createOutput()
         self.out.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
+        self.out.setQueueSize(1)
+        self.out.setBlocking(False)
 
         self.out_w = int(out_width)
         self.out_h = int(out_height)
@@ -169,7 +173,28 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         )
 
         while self.isRunning():
-            frame_msg: dai.ImgFrame = self.input.get()
+            # Drain to latest frame (non-blocking)
+            frame_msg: dai.ImgFrame | None = None
+            try:
+                while True:
+                    try:
+                        m = self.input.tryGet()
+                    except AttributeError:
+                        if not self.input.has():
+                            break
+                        m = self.input.get()
+                    if m is None:
+                        break
+                    frame_msg = m
+            except Exception:
+                frame_msg = None
+
+            if frame_msg is None:
+                # No new frame right now; yield briefly to avoid busy spin
+                import time as _t
+                _t.sleep(0.001)
+                continue
+
             bgr = frame_msg.getCvFrame()
             if bgr is None:
                 continue

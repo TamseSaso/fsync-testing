@@ -41,7 +41,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     )
     fps_limit = args.fps_limit if args.fps_limit else TARGET_FPS
 
-    cam = pipeline.create(dai.node.Camera).build(socket)
+    cam = pipeline.create(dai.node.Camera).build(socket, sensorFps=fps_limit)
     cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=100)
     source_out = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
     manip = pipeline.create(dai.node.ImageManip)
