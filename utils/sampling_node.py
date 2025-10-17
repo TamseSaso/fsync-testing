@@ -70,6 +70,7 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         self.latest_frame: Optional[dai.ImgFrame] = None
         self.frame_lock = threading.Lock()
         self._bootstrapped = False
+        self._target_start_slot: Optional[int] = None
 
     def build(self, frames: dai.Node.Output) -> "FrameSamplingNode":
         frames.link(self.input)
@@ -95,8 +96,8 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                     with self.frame_lock:
                         self.latest_frame = frame_msg
 
-                # Bootstrap: emit first frame immediately to flush any startup latency, then switch to slot/tick control
-                if frame_msg is not None and not self._bootstrapped and (self.shared_ticker is not None or self.ptp_slot_period is not None):
+                # Bootstrap: emit first frame immediately to flush any startup latency (only when using shared ticker)
+                if frame_msg is not None and not self._bootstrapped and (self.shared_ticker is not None and self.ptp_slot_period is None):
                     try:
                         # If in PTP mode, set last slot idx to the current slot to avoid double emission within the same slot
                         if self.ptp_slot_period is not None:
@@ -135,6 +136,19 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                         # Fallback: if offset not supported, use default timestamp
                         ts = frame.getTimestamp().total_seconds()
                     slot_idx = int((ts + self.ptp_slot_phase) / self.ptp_slot_period)
+
+                    # If no rendezvous is set, align the first emission to the next slot boundary
+                    if self._target_start_slot is None:
+                        self._target_start_slot = slot_idx + 1
+                        print(f"FrameSamplingNode PTP: arming for next slot >= {self._target_start_slot}")
+                        time.sleep(0.0005)
+                        continue
+
+                    # If armed for a specific slot, hold until that slot is reached
+                    if slot_idx < self._target_start_slot:
+                        time.sleep(0.0005)
+                        continue
+
                     if slot_idx > self._last_slot_idx:
                         with self.frame_lock:
                             if self.latest_frame is not None:
