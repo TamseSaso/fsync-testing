@@ -42,7 +42,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
 
     cam = pipeline.create(dai.node.Camera).build(socket)
     cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=200)
-    source_out = cam.requestOutput((1280, 720), frame_type, fps=fps_limit)
+    source_out = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
 
     # AprilTag detection and annotations
     apriltag_node = AprilTagAnnotationNode(
