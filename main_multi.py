@@ -18,7 +18,7 @@ DEVICE_INFOS = [
 ]
 
 # Synchronization settings
-TARGET_FPS = 10  # Will be adjusted based on device platform
+TARGET_FPS = 30  # Will be adjusted based on device platform
 SYNC_THRESHOLD_SEC = 1.0 / (2 * TARGET_FPS)  # Max drift to accept as "in sync"
 
 # Parse arguments used by the processing nodes (panel, apriltag, etc.)
