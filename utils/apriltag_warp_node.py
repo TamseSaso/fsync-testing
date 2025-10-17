@@ -74,7 +74,7 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         self.padding_left = -0.008  # Hardcoded left padding as fraction of width 
         self.padding_right = -0.01  # Hardcoded right padding as fraction of width
         self.bottom_right_y_offset = 0.016  # Fraction of height; negative lifts only the bottom-right corner up
-        self.bottom_y_offset = -0.01  # Fraction of height; negative lifts the entire bottom edge up slightly
+        self.bottom_y_offset = 0.01  # Fraction of height; negative lifts the entire bottom edge up slightly
         self._detector = None
         
         # Default camera parameters for 1920x1080 resolution (approximate values)
