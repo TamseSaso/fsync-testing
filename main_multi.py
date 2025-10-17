@@ -71,7 +71,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     ).build(source_out)
 
     # Latest-only sampler at a fixed interval so analyzer compares at a bounded rate
-    sampling_node = FrameSamplingNode(sample_interval_seconds=2.0).build(warp_node.out)
+    sampling_node = FrameSamplingNode(sample_interval_seconds=1.0 / TARGET_FPS).build(warp_node.out)
 
     # Analyze LED grid on the sampled (latest) crop
     led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.3).build(sampling_node.out)
