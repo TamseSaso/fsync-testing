@@ -118,14 +118,19 @@ with contextlib.ExitStack() as stack:
         for title, output, topic_type in topics:
             visualizer.addTopic(title + suffix, output, topic_type)
 
-        pipeline.start()
-        visualizer.registerPipeline(pipeline)
-        
+        # Removed pipeline.start() and visualizer.registerPipeline(pipeline) here
+
         # Store sync queue and device info for timestamp monitoring
         sync_queues.append(sync_queue)
         device_ids.append(device.getDeviceId())
         pipelines.append(pipeline)
         liveness_refs.append(nodes)
+
+    # Start all pipelines together after building everything
+    for p in pipelines:
+        p.start()
+    for p in pipelines:
+        visualizer.registerPipeline(p)
 
     # Synchronization state
     latest_sync_frames = {}  # key = device_idx, value = sync frame
@@ -135,7 +140,22 @@ with contextlib.ExitStack() as stack:
     last_sync_report_time = time.time()
     sync_stats = {"in_sync": 0, "out_of_sync": 0}
     
-    print(f"=== Starting synchronized visualization (threshold: {SYNC_THRESHOLD_SEC*1000:.2f}ms)")
+    print("=== Waiting for all devices to be ready (first frame from each)...")
+    # Block until each device has produced at least one frame
+    while not all(receivedFrames):
+        progressed = False
+        for idx, sync_queue in enumerate(sync_queues):
+            while sync_queue.has():
+                latest_sync_frames[idx] = sync_queue.get()
+                if not receivedFrames[idx]:
+                    print(f"=== Device ready: {device_ids[idx]}")
+                    receivedFrames[idx] = True
+                progressed = True
+        if not progressed:
+            time.sleep(0.005)
+    # Clear any buffered frames to start in lockstep
+    latest_sync_frames.clear()
+    print(f"=== All devices ready — starting synchronized visualization (threshold: {SYNC_THRESHOLD_SEC*1000:.2f}ms)")
     
     # Unified visualizer loop with synchronization monitoring
     while True:
