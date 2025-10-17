@@ -148,11 +148,18 @@ class LEDGridAnalyzer(dai.node.ThreadedHostNode):
                 # Decode bottom row for speed and intervals
                 speed, intervals = self._decode_bottom_row(grid_state, dynamic_threshold)
                 
+                # Prepare grid_state for output: scale bottom row so consumers using a single global threshold
+                # effectively apply the lowered bottom-row threshold (divide by scale => lower effective threshold)
+                grid_state_out = grid_state.copy()
+                scale = max(self.bottom_row_threshold_scale, 1e-6)
+                grid_state_out[-1, :] = grid_state_out[-1, :] / scale
+                
                 # Create output buffer with grid data, decoded values, and metadata
-                buffer_msg = self._create_buffer(grid_state, overall_avg_brightness, speed, intervals, frame_msg)
+                buffer_msg = self._create_buffer(grid_state_out, overall_avg_brightness, speed, intervals, frame_msg)
                 self.out.send(buffer_msg)
                 
-                num_leds_on = np.sum(grid_state > thresholds)
+                # For logging, match the consumer's simple global thresholding
+                num_leds_on = np.sum(grid_state_out > dynamic_threshold)
                 
                 print(f"Grid analyzed: {num_leds_on} LEDs above threshold | Speed: {speed}, Intervals: {intervals} (0b{intervals:016b}) | (avg={overall_avg_brightness:.3f} excl. bottom row, global_thresh={dynamic_threshold:.3f}, bottom_thresh={bottom_dynamic_threshold:.3f})")
                 
