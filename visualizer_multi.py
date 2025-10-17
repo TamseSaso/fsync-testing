@@ -64,6 +64,7 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
         (1920, 1080), dai.ImgFrame.Type.NV12, dai.ImgResizeMode.STRETCH
     )
     manip = pipeline.create(dai.node.ImageManip)
+    manip.setMaxOutputFrameSize(4 * 1024 * 1024)
     manip.initialConfig.addRotateDeg(180)
     node_out.link(manip.inputImage)
     node_out = manip.out
