@@ -55,7 +55,7 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
     Output: dai.ImgFrame (BGR, interleaved)
     """
 
-    def __init__(self, out_width: int, out_height: int, families: str = "tag36h11", quad_decimate: float = 1.0, tag_size: float = 0.1, z_offset: float = 0.1) -> None:
+    def __init__(self, out_width: int, out_height: int, families: str = "tag36h11", quad_decimate: float = 1.0, tag_size: float = 0.1, z_offset: float = 0.01) -> None:
         super().__init__()
 
         self.input = self.createInput()
@@ -70,10 +70,11 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         self.quad_decimate = quad_decimate if quad_decimate is not None and quad_decimate >= 0.5 else 1.0
         self.tag_size = tag_size  # Tag size in meters
         self.z_offset = z_offset  # Z-axis offset in meters
-        self.margin = 0.02  # Hardcoded margin as fraction of height for top/bottom (1%)
+        self.margin = 0.01  # Hardcoded margin as fraction of height for top/bottom (1%)
         self.padding_left = -0.008  # Hardcoded left padding as fraction of width 
         self.padding_right = -0.01  # Hardcoded right padding as fraction of width
         self.bottom_right_y_offset = 0.016  # Fraction of height; negative lifts only the bottom-right corner up
+        self.bottom_y_offset = -0.01  # Fraction of height; negative lifts the entire bottom edge up slightly
         self._detector = None
         
         # Default camera parameters for 1920x1080 resolution (approximate values)
@@ -154,14 +155,15 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         padding_left_pixels = self.padding_left * self.out_w
         padding_right_pixels = self.padding_right * self.out_w
         
-        # Only bottom-right corner is vertically offset
+        # Bottom edge lifted slightly, with extra bottom-right tweak
+        bottom_y_offset_pixels = self.bottom_y_offset * self.out_h
         br_y_offset_pixels = self.bottom_right_y_offset * self.out_h
         dst_quad = np.array(
             [
-                [padding_left_pixels, margin_pixels],  # Top-left with left padding and top margin
+                [padding_left_pixels, margin_pixels],  # Top-left unchanged
                 [self.out_w - 1.0 - padding_right_pixels, margin_pixels],  # Top-right unchanged
-                [self.out_w - 1.0 - padding_right_pixels, self.out_h - 1.0 - margin_pixels + br_y_offset_pixels],  # Bottom-right lifted/dropped by offset
-                [padding_left_pixels, self.out_h - 1.0 - margin_pixels],  # Bottom-left unchanged
+                [self.out_w - 1.0 - padding_right_pixels, self.out_h - 1.0 - margin_pixels + bottom_y_offset_pixels + br_y_offset_pixels],  # Bottom-right: base bottom lift + extra BR tweak
+                [padding_left_pixels, self.out_h - 1.0 - margin_pixels + bottom_y_offset_pixels],  # Bottom-left: base bottom lift only
             ],
             dtype=np.float32,
         )
@@ -225,5 +227,4 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
             else:
                 # If not enough tags, skip sending to keep stream stable
                 continue
-
 
