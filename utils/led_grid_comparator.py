@@ -3,7 +3,7 @@
 import json
 import struct
 import time
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
 
 import cv2
 import numpy as np
@@ -119,7 +119,7 @@ class LEDGridComparator(dai.node.ThreadedHostNode):
 
     # --------------------------- Helper methods -------------------------- #
     @staticmethod
-    def _drain_latest(inp: dai.Input, last: Optional[dai.Buffer]) -> Optional[dai.Buffer]:
+    def _drain_latest(inp: Any, last: Optional[dai.Buffer]) -> Optional[dai.Buffer]:
         latest = last
         try:
             while True:
