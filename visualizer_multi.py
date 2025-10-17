@@ -50,21 +50,6 @@ def format_time(td: datetime.timedelta) -> str:
         f"{days_prefix}{hours:02d}:{minutes:02d}:{seconds:02d}."
         f"{milliseconds:03d}.{microseconds_remainder:03d}"
     )
-# ---------------------------------------------------------------------------
-# Pipeline creation for raw camera stream
-# ---------------------------------------------------------------------------
-def createPipeline(
-    pipeline: dai.Pipeline,
-    socket: dai.CameraBoardSocket = dai.CameraBoardSocket.CAM_A,
-):
-    camRgb = pipeline.create(dai.node.Camera).build(socket, sensorFps=TARGET_FPS)
-    output = camRgb.requestOutput(
-        (640, 480), dai.ImgFrame.Type.NV12, dai.ImgResizeMode.STRETCH
-    )
-    if SET_MANUAL_EXPOSURE:
-        camRgb.initialControl.setManualExposure(6000, 200)
-    return pipeline, output
-
 
 # ---------------------------------------------------------------------------
 # Pipeline creation (unchanged API – only uses TARGET_FPS constant)
@@ -75,7 +60,10 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
         pipeline.create(dai.node.Camera)
         .build(socket, sensorFps=TARGET_FPS)
     )
-    node_out = camRgb.requestOutput(
+    manip = pipeline.create(dai.node.ImageManip)
+    manip.initialConfig.setRotation(180)
+    camRgb.preview.link(manip.inputImage)
+    node_out = manip.requestOutput(
         (1920, 1080), dai.ImgFrame.Type.NV12, dai.ImgResizeMode.STRETCH
     )
     output = node_out.createOutputQueue()
