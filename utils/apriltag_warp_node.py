@@ -55,7 +55,7 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
     Output: dai.ImgFrame (BGR, interleaved)
     """
 
-    def __init__(self, out_width: int, out_height: int, families: str = "tag36h11", quad_decimate: float = 1.0, tag_size: float = 0.1, z_offset: float = 0.1) -> None:
+    def __init__(self, out_width: int, out_height: int, families: str = "tag36h11", quad_decimate: float = 1.0, tag_size: float = 0.1, z_offset: float = 0.5) -> None:
         super().__init__()
 
         self.input = self.createInput()
