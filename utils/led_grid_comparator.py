@@ -1,5 +1,11 @@
 import json
 import struct
+import zlib
+import base64
+try:
+    import msgpack  # type: ignore
+except Exception:
+    msgpack = None
 import time
 from typing import Optional, Tuple, Any
 
@@ -52,6 +58,7 @@ class LEDGridComparator(dai.node.ThreadedHostNode):
         # State
         self._latest_left: Optional[dai.Buffer] = None
         self._latest_right: Optional[dai.Buffer] = None
+        self._logged_decode_error_once = False
 
     # ---------------------------- Builder API ---------------------------- #
     def build(self, left: dai.Node.Output, right: dai.Node.Output) -> "LEDGridComparator":
@@ -175,51 +182,129 @@ class LEDGridComparator(dai.node.ThreadedHostNode):
         return latest
 
     @staticmethod
-    def _decode_grid(buf: dai.Buffer) -> Tuple[Optional[np.ndarray], dict]:
-        data = buf.getData()
-        # 1) JSON with key 'grid' (and optional w/h)
-        try:
-            s = bytes(data).decode('utf-8')
-            obj = json.loads(s)
-            if 'grid' in obj:
-                arr = np.array(obj['grid'])
-                if arr.ndim == 1 and 'w' in obj and 'h' in obj:
-                    arr = arr.reshape(int(obj['h']), int(obj['w']))
-                elif arr.ndim == 2:
-                    pass
+    def _try_json_to_array(obj: dict) -> Optional[np.ndarray]:
+        # Accept a variety of key names
+        arr = None
+        keys_array = ["grid", "cells", "values", "data", "bits", "panel"]
+        for k in keys_array:
+            if k in obj:
+                arr = obj[k]
+                break
+        if arr is None:
+            # base64 bitmap?
+            for k in ["b64", "b64data", "bitmap_b64"]:
+                if k in obj:
+                    try:
+                        raw = base64.b64decode(obj[k])
+                        arr = list(raw)
+                    except Exception:
+                        pass
+        if arr is None:
+            return None
+        a = np.array(arr)
+        # Resolve width/height
+        w = obj.get("w") or obj.get("width") or obj.get("cols")
+        h = obj.get("h") or obj.get("height") or obj.get("rows")
+        if a.ndim == 1:
+            if w and h:
+                try:
+                    a = a.reshape(int(h), int(w))
+                except Exception:
+                    return None
+            else:
+                side = int(np.sqrt(a.size))
+                if side * side == a.size and side > 0:
+                    a = a.reshape(side, side)
                 else:
-                    side = int(np.sqrt(arr.size))
-                    if side * side == arr.size:
-                        arr = arr.reshape(side, side)
-                    else:
-                        return None, {}
-                # Normalize to 0/1
-                arr = (arr > 0.5).astype(np.uint8)
-                return arr, {"fmt": "json"}
+                    return None
+        elif a.ndim == 2:
+            pass
+        else:
+            return None
+        # Normalize to {0,1}
+        if a.dtype != np.uint8:
+            a = (a > 0.5).astype(np.uint8)
+        else:
+            a = (a > 0).astype(np.uint8)
+        return a
+
+    def _decode_grid(self, buf: dai.Buffer) -> Tuple[Optional[np.ndarray], dict]:
+        data = buf.getData()
+        by = bytes(data)
+        # (A) Try JSON (plain or with leading text)
+        try:
+            s = by.decode('utf-8', errors='ignore')
+            # Extract JSON substring if there is noise around
+            start = s.find('{')
+            end = s.rfind('}')
+            if start != -1 and end != -1 and end > start:
+                obj = json.loads(s[start:end+1])
+                arr = self._try_json_to_array(obj)
+                if arr is not None:
+                    return arr, {"fmt": "json"}
         except Exception:
             pass
-
-        # 2) Binary header: <uint32 w><uint32 h><uint8 data...>
+        # (B) zlib-compressed JSON
         try:
-            if len(data) >= 8:
-                w, h = struct.unpack('<II', bytes(data[:8]))
-                raw = np.frombuffer(bytes(data[8:8 + w*h]), dtype=np.uint8)
-                if raw.size == w * h:
+            dec = zlib.decompress(by)
+            s = dec.decode('utf-8', errors='ignore')
+            obj = json.loads(s)
+            arr = self._try_json_to_array(obj)
+            if arr is not None:
+                return arr, {"fmt": "json+zlib"}
+        except Exception:
+            pass
+        # (C) msgpack
+        try:
+            if msgpack is not None:
+                obj = msgpack.loads(by, raw=False)
+                if isinstance(obj, dict):
+                    arr = self._try_json_to_array(obj)
+                    if arr is not None:
+                        return arr, {"fmt": "msgpack"}
+        except Exception:
+            pass
+        # (D) Binary headers: <uint32,uint32> or <uint16,uint16>
+        try:
+            if len(by) >= 8:
+                w, h = struct.unpack('<II', by[:8])
+                if w > 0 and h > 0 and len(by) >= 8 + w*h:
+                    raw = np.frombuffer(by[8:8+w*h], dtype=np.uint8)
                     arr = (raw.reshape(h, w) > 0).astype(np.uint8)
-                    return arr, {"fmt": "bin_wh"}
+                    return arr, {"fmt": "bin_wh32"}
         except Exception:
             pass
-
-        # 3) Fallback: assume square u8 image; threshold at 128
         try:
-            raw = np.frombuffer(bytes(data), dtype=np.uint8)
+            if len(by) >= 4:
+                w16, h16 = struct.unpack('<HH', by[:4])
+                if w16 > 0 and h16 > 0 and len(by) >= 4 + w16*h16:
+                    raw = np.frombuffer(by[4:4+w16*h16], dtype=np.uint8)
+                    arr = (raw.reshape(h16, w16) > 0).astype(np.uint8)
+                    return arr, {"fmt": "bin_wh16"}
+        except Exception:
+            pass
+        # (E) Heuristic: 32x32 common grid (1024 bytes)
+        try:
+            if len(by) == 1024:
+                raw = np.frombuffer(by, dtype=np.uint8)
+                arr = (raw.reshape(32, 32) > 0).astype(np.uint8)
+                return arr, {"fmt": "raw_32x32"}
+        except Exception:
+            pass
+        # (F) Fallback: auto-square
+        try:
+            raw = np.frombuffer(by, dtype=np.uint8)
             side = int(np.sqrt(raw.size))
             if side * side == raw.size and side > 0:
                 arr = (raw.reshape(side, side) > 127).astype(np.uint8)
                 return arr, {"fmt": "square"}
         except Exception:
             pass
-
+        # One-time debug to help diagnose
+        if not self._logged_decode_error_once:
+            self._logged_decode_error_once = True
+            preview = ' '.join(f"{b:02x}" for b in by[:32])
+            print(f"[LEDGridComparator] Failed to decode analyzer Buffer. len={len(by)} head32={preview}")
         return None, {}
 
     @staticmethod
