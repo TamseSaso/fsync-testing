@@ -43,6 +43,11 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     cam = pipeline.create(dai.node.Camera).build(socket)
     cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=200)
     source_out = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
+    manip = pipeline.create(dai.node.ImageManip)
+    manip.setMaxOutputFrameSize(8 * 1024 * 1024)
+    manip.initialConfig.addRotateDeg(180)
+    source_out.link(manip.inputImage)
+    source_out = manip.out
 
     # AprilTag detection and annotations
     apriltag_node = AprilTagAnnotationNode(
@@ -186,4 +191,3 @@ with contextlib.ExitStack() as stack:
             if key == ord("q"):
                 print("Got q key. Exiting...")
                 break
-

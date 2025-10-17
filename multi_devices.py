@@ -60,14 +60,11 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
         pipeline.create(dai.node.Camera)
         .build(socket, sensorFps=TARGET_FPS)
     )
-    node_out = camRgb.requestOutput(
-        (1920, 1080), dai.ImgFrame.Type.NV12, dai.ImgResizeMode.STRETCH
+    output = (
+        camRgb.requestOutput(
+            (640, 480), dai.ImgFrame.Type.NV12, dai.ImgResizeMode.STRETCH
+        ).createOutputQueue()
     )
-    manip = pipeline.create(dai.node.ImageManip)
-    manip.setMaxOutputFrameSize(4 * 1024 * 1024)
-    manip.initialConfig.addRotateDeg(180)
-    node_out.link(manip.inputImage)
-    output = manip.out.createOutputQueue()
     if SET_MANUAL_EXPOSURE:
         camRgb.initialControl.setManualExposure(1000, 100)
     return pipeline, output
