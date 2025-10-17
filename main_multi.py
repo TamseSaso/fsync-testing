@@ -5,7 +5,7 @@ import time
 from utils.arguments import initialize_argparser
 from utils.apriltag_node import AprilTagAnnotationNode
 from utils.apriltag_warp_node import AprilTagWarpNode
-from utils.sampling_node import FrameSamplingNode
+from utils.sampling_node import FrameSamplingNode, SharedTicker
 from utils.led_grid_analyzer import LEDGridAnalyzer
 from utils.led_grid_visualizer import LEDGridVisualizer
 from utils.video_annotation_composer import VideoAnnotationComposer
@@ -25,8 +25,11 @@ SYNC_THRESHOLD_SEC = 1.0 / (2 * TARGET_FPS)  # Max drift to accept as "in sync"
 _, args = initialize_argparser()
 panel_width, panel_height = map(int, args.panel_size.split(","))
 
-# Visualizer connection
+ # Visualizer connection
 visualizer = dai.RemoteConnection(httpPort=8082)
+
+# Global wall-clock ticker used by both devices so sampling happens on the same ticks
+GLOBAL_TICKER = SharedTicker(period_sec=1.0 / TARGET_FPS, start_delay_sec=0.5)
 
 
 def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: dai.CameraBoardSocket):
@@ -70,8 +73,8 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
         z_offset=args.z_offset,
     ).build(source_out)
 
-    # Latest-only sampler at a fixed interval so analyzer compares at a bounded rate
-    sampling_node = FrameSamplingNode(sample_interval_seconds=1.0 / TARGET_FPS).build(warp_node.out)
+    # Latest-only sampler using the global ticker so analyzer compares at a bounded rate and both devices are in sync
+    sampling_node = FrameSamplingNode(shared_ticker=GLOBAL_TICKER).build(warp_node.out)
 
     # Analyze LED grid on the sampled (latest) crop
     led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.3).build(sampling_node.out)
@@ -84,7 +87,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     topics = [
         ("Video with AprilTags", video_composer.out, "video"),
         ("Panel Crop", warp_node.out, "panel"),
-        ("Sampled Panel (latest @2s)", sampling_node.out, "panel"),
+        ("Sampled Panel (global-tick)", sampling_node.out, "panel"),
         ("LED Grid (32x32)", led_visualizer.out, "led"),
     ]
     
@@ -156,6 +159,9 @@ with contextlib.ExitStack() as stack:
     # Clear any buffered frames to start in lockstep
     latest_sync_frames.clear()
     print(f"=== All devices ready — starting synchronized visualization (threshold: {SYNC_THRESHOLD_SEC*1000:.2f}ms)")
+    
+    # Arm the global ticker so both samplers tick together
+    GLOBAL_TICKER.start()
     
     # Unified visualizer loop with synchronization monitoring
     while True:
