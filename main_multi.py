@@ -139,13 +139,7 @@ with contextlib.ExitStack() as stack:
         except Exception:
             pass
 
-    # Start all pipelines together after building everything
-    for p in pipelines:
-        p.start()
-    for p in pipelines:
-        visualizer.registerPipeline(p)
-
-    # --- Cross-device LED grid comparator topic ---
+    # --- Cross-device LED grid comparator topic (must be created BEFORE starting pipelines) ---
     if len(analyzer_outputs) >= 2:
         try:
             comparator = LEDGridComparator(pass_threshold=0.90, output_size=(1024, 512)).build(
@@ -159,6 +153,13 @@ with contextlib.ExitStack() as stack:
             print(f"Warning: LEDGridComparator could not be created: {e}")
     else:
         print("Warning: Not enough analyzer outputs to build LEDGridComparator")
+
+    # Start all pipelines together after building everything
+    for p in pipelines:
+        p.start()
+    for p in pipelines:
+        visualizer.registerPipeline(p)
+
 
     # Synchronization state
     latest_sync_frames = {}  # key = device_idx, value = sync frame
