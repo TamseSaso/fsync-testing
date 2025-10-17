@@ -59,20 +59,10 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         super().__init__()
 
         self.input = self.createInput()
-        self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
-        try:
-            self.input.setQueueSize(1)
-            self.input.setBlocking(False)
-        except AttributeError:
-            pass
+        self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])    
 
         self.out = self.createOutput()
         self.out.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
-        try:
-            self.out.setQueueSize(1)
-            self.out.setBlocking(False)
-        except AttributeError:
-            pass
 
         self.out_w = int(out_width)
         self.out_h = int(out_height)
