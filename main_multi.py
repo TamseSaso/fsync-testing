@@ -74,7 +74,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     sampling_node = FrameSamplingNode(sample_interval_seconds=2.0).build(warp_node.out)
 
     # Analyze LED grid, then visualize it
-    led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.4).build(sampling_node.out)
+    led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.3).build(sampling_node.out)
     led_visualizer = LEDGridVisualizer(output_size=(1024, 1024)).build(led_analyzer.out)
 
     # Compose video + apriltag annotations
