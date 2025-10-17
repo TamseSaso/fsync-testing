@@ -8,7 +8,6 @@ from utils.apriltag_warp_node import AprilTagWarpNode
 from utils.sampling_node import FrameSamplingNode
 from utils.led_grid_analyzer import LEDGridAnalyzer
 from utils.led_grid_visualizer import LEDGridVisualizer
-from utils.led_grid_comparator import LEDGridComparator
 from utils.video_annotation_composer import VideoAnnotationComposer
 
 
@@ -103,7 +102,6 @@ with contextlib.ExitStack() as stack:
     device_ids = []
     pipelines = []
     liveness_refs = []  # keep strong references to host nodes per pipeline
-    analyzer_outputs = []  # collect LEDGridAnalyzer outputs from each pipeline
 
     for deviceInfo in DEVICE_INFOS:
         pipeline = stack.enter_context(dai.Pipeline(dai.Device(deviceInfo)))
@@ -128,31 +126,6 @@ with contextlib.ExitStack() as stack:
         device_ids.append(device.getDeviceId())
         pipelines.append(pipeline)
         liveness_refs.append(nodes)
-
-        # Capture the LEDGridAnalyzer output for comparator wiring later
-        try:
-            from utils.led_grid_analyzer import LEDGridAnalyzer as _LGA
-            for _n in nodes:
-                if isinstance(_n, _LGA):
-                    analyzer_outputs.append(_n.out)
-                    break
-        except Exception:
-            pass
-
-    # --- Cross-device LED grid comparator topic (must be created BEFORE starting pipelines) ---
-    if len(analyzer_outputs) >= 2:
-        try:
-            comparator = LEDGridComparator(pass_threshold=0.90, output_size=(1024, 512)).build(
-                analyzer_outputs[0], analyzer_outputs[1]
-            )
-            # Keep a strong ref so it doesn't get GC'd
-            liveness_refs.append([comparator])
-            visualizer.addTopic("LED Compare (Device 0 vs 1)", comparator.out, "video")
-            print("=== LEDGridComparator topic registered (Device 0 vs 1)")
-        except Exception as e:
-            print(f"Warning: LEDGridComparator could not be created: {e}")
-    else:
-        print("Warning: Not enough analyzer outputs to build LEDGridComparator")
 
     # Start all pipelines together after building everything
     for p in pipelines:
