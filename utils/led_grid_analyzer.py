@@ -109,10 +109,10 @@ class LEDGridAnalyzer(dai.node.ThreadedHostNode):
         
         return speed, intervals
 
-    def _create_buffer(self, grid_state: np.ndarray, overall_avg_brightness: float, speed: int, intervals: int, src: dai.ImgFrame, dynamic_threshold: float, bottom_dynamic_threshold: float) -> dai.Buffer:
+    def _create_buffer(self, grid_state: np.ndarray, overall_avg_brightness: float, speed: int, intervals: int, src: dai.ImgFrame) -> dai.Buffer:
         """Create a DAI buffer containing the grid state data, decoded values, and metadata."""
-        # Create a combined array: [grid_state_flattened, overall_avg_brightness, threshold_multiplier, speed, intervals, bottom_row_threshold_scale, dynamic_threshold, bottom_dynamic_threshold]
-        metadata = np.array([overall_avg_brightness, self.threshold_multiplier, float(speed), float(intervals), self.bottom_row_threshold_scale, dynamic_threshold, bottom_dynamic_threshold], dtype=np.float32)
+        # Create a combined array: [grid_state_flattened, overall_avg_brightness, threshold_multiplier, speed, intervals]
+        metadata = np.array([overall_avg_brightness, self.threshold_multiplier, float(speed), float(intervals)], dtype=np.float32)
         combined_data = np.concatenate([grid_state.flatten(), metadata])
         
         buffer = dai.Buffer()
@@ -149,7 +149,7 @@ class LEDGridAnalyzer(dai.node.ThreadedHostNode):
                 speed, intervals = self._decode_bottom_row(grid_state, dynamic_threshold)
                 
                 # Create output buffer with grid data, decoded values, and metadata
-                buffer_msg = self._create_buffer(grid_state, overall_avg_brightness, speed, intervals, frame_msg, dynamic_threshold, bottom_dynamic_threshold)
+                buffer_msg = self._create_buffer(grid_state, overall_avg_brightness, speed, intervals, frame_msg)
                 self.out.send(buffer_msg)
                 
                 num_leds_on = np.sum(grid_state > thresholds)
