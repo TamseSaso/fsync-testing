@@ -11,7 +11,7 @@ class LEDGridAnalyzer(dai.node.ThreadedHostNode):
     Output: dai.Buffer containing grid state data
     """
 
-    def __init__(self, grid_size: int = 32, threshold_multiplier: float = 1.3) -> None:
+    def __init__(self, grid_size: int = 32, threshold_multiplier: float = 1.3, bottom_row_threshold_scale: float = 1.1) -> None:
         super().__init__()
         
         self.input = self.createInput()
@@ -22,6 +22,7 @@ class LEDGridAnalyzer(dai.node.ThreadedHostNode):
         
         self.grid_size = grid_size
         self.threshold_multiplier = threshold_multiplier
+        self.bottom_row_threshold_scale = bottom_row_threshold_scale
         
     def build(self, frames: dai.Node.Output) -> "LEDGridAnalyzer":
         frames.link(self.input)
@@ -90,11 +91,12 @@ class LEDGridAnalyzer(dai.node.ThreadedHostNode):
             tuple: (speed, intervals)
         """
         bottom_row = self.grid_size - 1
+        threshold = dynamic_threshold * self.bottom_row_threshold_scale
         
         # Decode speed from first 16 LEDs (count of green LEDs)
         speed = 0
         for col in range(16):
-            if col < self.grid_size and grid_state[bottom_row, col] > dynamic_threshold:
+            if col < self.grid_size and grid_state[bottom_row, col] > threshold:
                 speed += 1
         
         # Decode intervals from last 16 LEDs (binary encoding - MSB first)
@@ -102,7 +104,7 @@ class LEDGridAnalyzer(dai.node.ThreadedHostNode):
         for col in range(16, 32):
             if col < self.grid_size:
                 bit_position = 15 - (col - 16)  # 15-0 (MSB first)
-                if grid_state[bottom_row, col] > dynamic_threshold:
+                if grid_state[bottom_row, col] > threshold:
                     intervals |= (1 << bit_position)  # Set bit at position
         
         return speed, intervals
@@ -137,6 +139,7 @@ class LEDGridAnalyzer(dai.node.ThreadedHostNode):
                 
                 # Calculate dynamic threshold
                 dynamic_threshold = overall_avg_brightness * self.threshold_multiplier
+                bottom_dynamic_threshold = dynamic_threshold * self.bottom_row_threshold_scale
                 
                 # Decode bottom row for speed and intervals
                 speed, intervals = self._decode_bottom_row(grid_state, dynamic_threshold)
@@ -147,7 +150,7 @@ class LEDGridAnalyzer(dai.node.ThreadedHostNode):
                 
                 num_leds_on = np.sum(grid_state > dynamic_threshold)
                 
-                print(f"Grid analyzed: {num_leds_on} LEDs above threshold | Speed: {speed}, Intervals: {intervals} (0b{intervals:016b}) | (avg={overall_avg_brightness:.3f} excl. bottom row, thresh={dynamic_threshold:.3f})")
+                print(f"Grid analyzed: {num_leds_on} LEDs above threshold | Speed: {speed}, Intervals: {intervals} (0b{intervals:016b}) | (avg={overall_avg_brightness:.3f} excl. bottom row, thresh={dynamic_threshold:.3f}, bottom_thresh={bottom_dynamic_threshold:.3f})")
                 
             except Exception as e:
                 print(f"LEDGridAnalyzer error: {e}")
