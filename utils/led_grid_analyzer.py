@@ -16,13 +16,19 @@ class LEDGridAnalyzer(dai.node.ThreadedHostNode):
         
         self.input = self.createInput()
         self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
-        self.input.setQueueSize(1)
-        self.input.setBlocking(False)
+        try:
+            self.input.setQueueSize(1)
+            self.input.setBlocking(False)
+        except AttributeError:
+            pass
         
         self.out = self.createOutput()
         self.out.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, True)])
-        self.out.setQueueSize(1)
-        self.out.setBlocking(False)
+        try:
+            self.out.setQueueSize(1)
+            self.out.setBlocking(False)
+        except AttributeError:
+            pass
         
         self.grid_size = grid_size
         self.threshold_multiplier = threshold_multiplier
