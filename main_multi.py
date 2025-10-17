@@ -5,7 +5,7 @@ import time
 from utils.arguments import initialize_argparser
 from utils.apriltag_node import AprilTagAnnotationNode
 from utils.apriltag_warp_node import AprilTagWarpNode
-from utils.sampling_node import FrameSamplingNode, SharedTicker
+from utils.sampling_node import FrameSamplingNode
 from utils.led_grid_analyzer import LEDGridAnalyzer
 from utils.led_grid_visualizer import LEDGridVisualizer
 from utils.video_annotation_composer import VideoAnnotationComposer
@@ -28,8 +28,6 @@ panel_width, panel_height = map(int, args.panel_size.split(","))
  # Visualizer connection
 visualizer = dai.RemoteConnection(httpPort=8082)
 
-# Global wall-clock ticker used by both devices so sampling happens on the same ticks
-GLOBAL_TICKER = SharedTicker(period_sec=1.0 / TARGET_FPS, start_delay_sec=0.5)
 
 
 def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: dai.CameraBoardSocket):
@@ -73,8 +71,8 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
         z_offset=args.z_offset,
     ).build(source_out)
 
-    # Latest-only sampler using the global ticker so analyzer compares at a bounded rate and both devices are in sync
-    sampling_node = FrameSamplingNode(shared_ticker=GLOBAL_TICKER).build(warp_node.out)
+    # Latest-only sampler using PTP-slotted timestamps so analyzer compares aligned frames across devices
+    sampling_node = FrameSamplingNode(ptp_slot_period_sec=1.0 / TARGET_FPS).build(warp_node.out)
 
     # Analyze LED grid on the sampled (latest) crop
     led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.3).build(sampling_node.out)
@@ -87,7 +85,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     topics = [
         ("Video with AprilTags", video_composer.out, "video"),
         ("Panel Crop", warp_node.out, "panel"),
-        ("Sampled Panel (global-tick)", sampling_node.out, "panel"),
+        ("Sampled Panel (PTP slots)", sampling_node.out, "panel"),
         ("LED Grid (32x32)", led_visualizer.out, "led"),
     ]
     
@@ -135,8 +133,6 @@ with contextlib.ExitStack() as stack:
     for p in pipelines:
         visualizer.registerPipeline(p)
 
-    print("=== Arming global ticker...")
-    GLOBAL_TICKER.start()
 
     # Synchronization state
     latest_sync_frames = {}  # key = device_idx, value = sync frame
