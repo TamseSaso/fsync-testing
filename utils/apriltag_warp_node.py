@@ -55,7 +55,7 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
     Output: dai.ImgFrame (BGR, interleaved)
     """
 
-    def __init__(self, out_width: int, out_height: int, families: str = "tag36h11", quad_decimate: float = 1.0, tag_size: float = 0.1, z_offset: float = 0.01) -> None:
+    def __init__(self, out_width: int, out_height: int, families: str = "tag36h11", quad_decimate: float = 1.0, tag_size: float = 0.1, z_offset: float = 0.02) -> None:
         super().__init__()
 
         self.input = self.createInput()
@@ -73,7 +73,7 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         self.margin = 0.01  # Hardcoded margin as fraction of height for top/bottom (1%)
         self.padding_left = -0.008  # Hardcoded left padding as fraction of width 
         self.padding_right = -0.01  # Hardcoded right padding as fraction of width
-        self.bottom_right_y_offset = 0.01  # Fraction of height; negative lifts only the bottom-right corner up
+        self.bottom_right_y_offset = 0.014  # Fraction of height; negative lifts only the bottom-right corner up
         self._detector = None
         
         # Default camera parameters for 1920x1080 resolution (approximate values)
