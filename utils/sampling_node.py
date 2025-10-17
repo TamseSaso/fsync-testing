@@ -3,6 +3,47 @@ import threading
 import depthai as dai
 from typing import Optional
 
+class SharedTicker:
+    """A simple cross-node wall-clock ticker.
+    All samplers that share the same instance will "tick" at the same time.
+    Call .start() once to begin ticking.
+    """
+    def __init__(self, period_sec: float, start_delay_sec: float = 0.0):
+        self.period_sec = float(period_sec)
+        self.start_delay_sec = float(start_delay_sec)
+        self._start_time = None
+        self._tick_idx = 0
+        self._cond = threading.Condition()
+        self._running = False
+
+    def start(self):
+        with self._cond:
+            if self._running:
+                return
+            self._running = True
+            self._start_time = time.monotonic() + self.start_delay_sec
+            threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        next_fire = self._start_time
+        while True:
+            now = time.monotonic()
+            sleep = max(0.0, next_fire - now)
+            if sleep:
+                time.sleep(sleep)
+            with self._cond:
+                self._tick_idx += 1
+                self._cond.notify_all()
+            next_fire += self.period_sec
+
+    def wait_next_tick(self, last_seen_idx: int = 0) -> int:
+        """Blocks until a new tick is published. Returns the new tick index."""
+        with self._cond:
+            while self._tick_idx <= last_seen_idx:
+                self._cond.wait()
+            return self._tick_idx
+
+
 class FrameSamplingNode(dai.node.ThreadedHostNode):
     """Samples frames from input at specified intervals and forwards them to output.
     
