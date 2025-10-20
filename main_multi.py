@@ -120,7 +120,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     ]
     
     # Create a continuous host frame queue for sync/display (matches reference script behavior)
-    sync_queue = source_out.createOutputQueue(1, False)
+    sync_queue = None  # No extra host queue; Visualizer topics handle streaming
     
     # Return topics, sync queue, analyzer queue, and strong references to nodes to prevent premature GC
     nodes = [cam, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
@@ -130,7 +130,6 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
 
 
 with contextlib.ExitStack() as stack:
-    queues = []
     pipelines = []
     device_ids = []
     analyzer_queues = []
@@ -153,7 +152,6 @@ with contextlib.ExitStack() as stack:
             for title, output, topic_type in topics:
                 visualizer.addTopic(title + suffix, output, topic_type)
 
-        queues.append(sync_queue)
         device_ids.append(device.getDeviceId())
         pipelines.append(pipeline)
         analyzer_queues.append(analyzer_queue)
@@ -192,16 +190,8 @@ with contextlib.ExitStack() as stack:
         visualizer.registerPipeline(p)
 
 
-    # Minimal loop: keep queues flowing; no PTP sync-gating or OpenCV windows
-    receivedFrames = [False for _ in queues]
+    # Idle loop – Visualizer handles display; press 'q' to quit
     while True:
-        for idx, q in enumerate(queues):
-            while q.has():
-                _ = q.get()
-                if not receivedFrames[idx]:
-                    print("=== Received frame from", device_ids[idx])
-                    receivedFrames[idx] = True
-
         key = visualizer.waitKey(1) if visualizer is not None else -1
         if key == ord("q"):
             print("Got q key. Exiting...")
