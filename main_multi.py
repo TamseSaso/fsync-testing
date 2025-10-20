@@ -147,9 +147,7 @@ with contextlib.ExitStack() as stack:
         socket = device.getConnectedCameras()[0]
         topics, sync_queue, analyzer_queue, _ = build_nodes_on_pipeline(pipeline, device, socket)
 
-        # Register pipeline and add topics BEFORE starting the pipeline
-        if (ENABLE_VISUALIZER_PIPELINES or ENABLE_VISUALIZER_COMPARISON) and visualizer is not None:
-            visualizer.registerPipeline(pipeline)
+        # Add topics BEFORE starting the pipeline (queues must be created pre-build)
         if ENABLE_VISUALIZER_PIPELINES and visualizer is not None:
             suffix = f" [{device.getDeviceId()}]"
             for title, output, topic_type in topics:
