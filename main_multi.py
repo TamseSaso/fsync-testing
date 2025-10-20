@@ -36,19 +36,21 @@ DEVICE_INFOS = [
 
 # Synchronization settings
 TARGET_FPS = 30  # Will be adjusted based on device platform
-SYNC_THRESHOLD_SEC = 1.0 / (2 * TARGET_FPS)  # Max drift to accept as "in sync"
 
 # Parse arguments used by the processing nodes (panel, apriltag, etc.)
 _, args = initialize_argparser()
 panel_width, panel_height = map(int, args.panel_size.split(","))
 
-# Derive effective FPS once args are known and keep all sync math consistent
 EFFECTIVE_FPS = int(args.fps_limit) if args.fps_limit else TARGET_FPS
 SYNC_THRESHOLD_SEC = 1.0 / (2 * EFFECTIVE_FPS)
 SNAPSHOT_INTERVAL_SEC = 5.0  # Wait time between PTP snapshots
 
- # Visualizer connection
-visualizer = dai.RemoteConnection(httpPort=8082)
+# Visualizer toggles: only publish the comparison to the visualizer
+ENABLE_VISUALIZER_PIPELINES = False   # per-device/topic streams OFF
+ENABLE_VISUALIZER_COMPARISON = True   # comparison overlay/report ONLY
+visualizer = None
+if ENABLE_VISUALIZER_PIPELINES or ENABLE_VISUALIZER_COMPARISON:
+    visualizer = dai.RemoteConnection(httpPort=8082)
 
 
 
@@ -117,6 +119,13 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     
     # Return topics, sync queue, analyzer queue, and strong references to nodes to prevent premature GC
     nodes = [cam, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
+
+    # Register topics with visualizer (per-device streams) — disabled by default
+    if ENABLE_VISUALIZER_PIPELINES and visualizer is not None:
+        suffix = f" [{device.getDeviceId()}]"
+        for title, output, topic_type in topics:
+            visualizer.addTopic(title + suffix, output, topic_type)
+
     return topics, sync_queue, analyzer_queue, nodes
 
 
@@ -139,11 +148,6 @@ with contextlib.ExitStack() as stack:
         socket = device.getConnectedCameras()[0]
         topics, sync_queue, analyzer_queue, nodes = build_nodes_on_pipeline(pipeline, device, socket)
 
-        # Register topics with visualizer (using Node.Output objects)
-        suffix = f" [{device.getDeviceId()}]"
-        for title, output, topic_type in topics:
-            visualizer.addTopic(title + suffix, output, topic_type)
-
         # Capture LED grid visualization output for tick source
         led_vis_out = None
         for title, output, topic_type in topics:
@@ -164,8 +168,9 @@ with contextlib.ExitStack() as stack:
                 led_period_us=160.0,
                 pass_ratio=0.90
             ).build(led_vis_out if led_vis_out is not None else topics[0][1])
-            visualizer.addTopic("LED Overlay [comparison]", comparison_node.out_overlay, "led")
-            visualizer.addTopic("LED Sync Report [comparison]", comparison_node.out_report, "video")
+            if ENABLE_VISUALIZER_COMPARISON and visualizer is not None:
+                visualizer.addTopic("LED Overlay [comparison]", comparison_node.out_overlay, "led")
+                visualizer.addTopic("LED Sync Report [comparison]", comparison_node.out_report, "video")
 
         analyzer_queues.append(analyzer_queue)
 
@@ -183,8 +188,9 @@ with contextlib.ExitStack() as stack:
     # Start all pipelines together after building everything
     for p in pipelines:
         p.start()
-    for p in pipelines:
-        visualizer.registerPipeline(p)
+    if (ENABLE_VISUALIZER_PIPELINES or ENABLE_VISUALIZER_COMPARISON) and visualizer is not None:
+        for p in pipelines:
+            visualizer.registerPipeline(p)
 
     # Per-queue FPS counters (to mirror reference script behavior)
     fpsCounters = [FPSCounter() for _ in sync_queues]
@@ -195,7 +201,7 @@ with contextlib.ExitStack() as stack:
     receivedFrames = [False] * len(sync_queues)
     anyFrameEver = False
     allDevicesReported = False
-    last_sync_report_time = time.time()
+    last_sync_report_time = time.monotonic()
     sync_stats = {"in_sync": 0, "out_of_sync": 0}
     
     print("=== Waiting for all devices to be ready (first frame from each)...")
@@ -215,8 +221,9 @@ with contextlib.ExitStack() as stack:
     # Clear any buffered frames to start in lockstep
     latest_sync_frames.clear()
     print(f"=== All devices ready — starting synchronized visualization (threshold: {SYNC_THRESHOLD_SEC*1000:.2f}ms)")
-    
-    next_snapshot_time = 0.0  # capture immediately, then wait SNAPSHOT_INTERVAL_SEC between snapshots
+    cv2.namedWindow("synced_view", cv2.WINDOW_NORMAL)
+
+    next_snapshot_time = time.monotonic() + SNAPSHOT_INTERVAL_SEC  # wait before first capture
     
     # Unified visualizer loop with synchronization monitoring
     while True:
@@ -268,7 +275,7 @@ with contextlib.ExitStack() as stack:
                     imgs.append(frame)
 
                 # Only take/display a PTP snapshot every SNAPSHOT_INTERVAL_SEC seconds
-                if time.time() >= next_snapshot_time:
+                if time.monotonic() >= next_snapshot_time:
                     # Match reference script banner semantics (1 ms tightness indicator)
                     delta_ms = delta * 1e3
                     sync_status = "in sync" if abs(delta) < 0.001 else "out of sync"
@@ -286,14 +293,14 @@ with contextlib.ExitStack() as stack:
 
                     cv2.imshow("synced_view", cv2.hconcat(imgs))
                     print(f"=== Captured PTP snapshot; Δ={delta_ms:.3f} ms — waiting {SNAPSHOT_INTERVAL_SEC:.1f}s before next")
-                    next_snapshot_time = time.time() + SNAPSHOT_INTERVAL_SEC
+                    next_snapshot_time = time.monotonic() + SNAPSHOT_INTERVAL_SEC
                     latest_sync_frames.clear()  # wait for next aligned batch
             else:
                 sync_stats["out_of_sync"] += 1
                 # Do not clear when out of sync; keep latest frames until they align
 
             # Report sync status every 5 seconds
-            if time.time() - last_sync_report_time > 5.0:
+            if time.monotonic() - last_sync_report_time > 5.0:
                 total = sync_stats["in_sync"] + sync_stats["out_of_sync"]
                 if total > 0:
                     sync_rate = (sync_stats["in_sync"] / total) * 100
@@ -303,11 +310,11 @@ with contextlib.ExitStack() as stack:
                         f"current delta: {delta*1000:.2f}ms"
                     )
                 sync_stats = {"in_sync": 0, "out_of_sync": 0}
-                last_sync_report_time = time.time()
+                last_sync_report_time = time.monotonic()
         
         # Visualizer + OpenCV key handling (non-blocking)
-        key = visualizer.waitKey(1)
-        if key == ord("q") or (cv2.waitKey(1) & 0xFF == ord("q")):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
             print("Got q key. Exiting...")
             break
 
