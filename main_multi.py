@@ -1,6 +1,7 @@
 import contextlib
 import depthai as dai
 import time
+import cv2
 
 from utils.arguments import initialize_argparser
 from utils.apriltag_node import AprilTagAnnotationNode
@@ -193,6 +194,7 @@ with contextlib.ExitStack() as stack:
     
     # Unified visualizer loop with synchronization monitoring
     while True:
+        break_main = False
         # Collect newest frame from each device's sync queue (non-blocking)
         frameReceivedThisIter = False
         for idx, sync_queue in enumerate(sync_queues):
@@ -219,29 +221,63 @@ with contextlib.ExitStack() as stack:
             ]
             delta = max(ts_values) - min(ts_values)
 
-            # Track sync status
+            # Track sync status and only clear when frames are aligned
             if delta <= SYNC_THRESHOLD_SEC:
                 sync_stats["in_sync"] += 1
+
+                # --- Build side-by-side composite of aligned frames ---
+                imgs = []
+                ordered_idxs = list(range(len(sync_queues)))
+                for i in ordered_idxs:
+                    msg = latest_sync_frames[i]
+                    frame = msg.getCvFrame()
+                    cv2.putText(
+                        frame,
+                        f"{device_ids[i]} | ts: {ts_values[i]:.6f}s",
+                        (20, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (255, 0, 50),
+                        2,
+                        cv2.LINE_AA,
+                    )
+                    imgs.append(frame)
+
+                delta_ms = delta * 1e3
+                cv2.putText(
+                    imgs[0],
+                    f"in sync | Δ = {delta_ms:.3f} ms",
+                    (20, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 255, 0),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+                cv2.imshow("synced_view", cv2.hconcat(imgs))
+                latest_sync_frames.clear()  # wait for next aligned batch
             else:
                 sync_stats["out_of_sync"] += 1
+                # Do not clear when out of sync; keep latest frames until they align
 
-            # Always clear to avoid building latency/backlog
-            latest_sync_frames.clear()
-            
             # Report sync status every 5 seconds
             if time.time() - last_sync_report_time > 5.0:
                 total = sync_stats["in_sync"] + sync_stats["out_of_sync"]
                 if total > 0:
                     sync_rate = (sync_stats["in_sync"] / total) * 100
-                    print(f"=== Sync status: {sync_rate:.1f}% in sync "
-                          f"({sync_stats['in_sync']} in / {sync_stats['out_of_sync']} out), "
-                          f"current delta: {delta*1000:.2f}ms")
+                    print(
+                        f"=== Sync status: {sync_rate:.1f}% in sync "
+                        f"({sync_stats['in_sync']} in / {sync_stats['out_of_sync']} out), "
+                        f"current delta: {delta*1000:.2f}ms"
+                    )
                 sync_stats = {"in_sync": 0, "out_of_sync": 0}
                 last_sync_report_time = time.time()
         
-        # Visualizer update
-        while True:
-            key = visualizer.waitKey(1)
-            if key == ord("q"):
-                print("Got q key. Exiting...")
-                break
+        # Visualizer + OpenCV key handling (non-blocking)
+        key = visualizer.waitKey(1)
+        if key == ord("q") or (cv2.waitKey(1) & 0xFF == ord("q")):
+            print("Got q key. Exiting...")
+            break
+
+    cv2.destroyAllWindows()
