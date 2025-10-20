@@ -52,7 +52,7 @@ SNAPSHOT_INTERVAL_SEC = SAMPLING_PERIOD_SEC
 ENABLE_VISUALIZER_PIPELINES = False   # per-device/topic streams OFF
 ENABLE_VISUALIZER_COMPARISON = True   # comparison overlay/report ONLY
 # Disable local OpenCV window (we only use the comparison visualizer topics)
-SHOW_LOCAL_WINDOW = True
+SHOW_LOCAL_WINDOW = False
 visualizer = None
 if ENABLE_VISUALIZER_PIPELINES or ENABLE_VISUALIZER_COMPARISON:
     visualizer = dai.RemoteConnection(httpPort=8082)
@@ -226,8 +226,14 @@ with contextlib.ExitStack() as stack:
     # Clear any buffered frames to start in lockstep
     latest_sync_frames.clear()
     print(f"=== All devices ready — starting synchronized visualization (threshold: {SYNC_THRESHOLD_SEC*1000:.2f}ms)")
+    WINDOW_OK = False
     if SHOW_LOCAL_WINDOW:
-        cv2.namedWindow("synced_view", cv2.WINDOW_NORMAL)
+        try:
+            cv2.namedWindow("synced_view", cv2.WINDOW_NORMAL)
+            WINDOW_OK = True
+        except Exception as e:
+            print("=== OpenCV GUI not available; disabling local window:", e)
+            WINDOW_OK = False
 
     
     # Unified visualizer loop with synchronization monitoring
@@ -293,7 +299,7 @@ with contextlib.ExitStack() as stack:
                     2,
                     cv2.LINE_AA,
                 )
-                if SHOW_LOCAL_WINDOW:
+                if 'WINDOW_OK' in globals() and WINDOW_OK:
                     cv2.imshow("synced_view", cv2.hconcat(imgs))
                 latest_sync_frames.clear()  # wait for next aligned batch
             else:
@@ -314,11 +320,11 @@ with contextlib.ExitStack() as stack:
                 last_sync_report_time = time.monotonic()
         
         # Visualizer + OpenCV key handling (non-blocking)
-        if SHOW_LOCAL_WINDOW:
+        if 'WINDOW_OK' in globals() and WINDOW_OK:
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 print("Got q key. Exiting...")
                 break
 
-    if SHOW_LOCAL_WINDOW:
+    if 'WINDOW_OK' in globals() and WINDOW_OK:
         cv2.destroyAllWindows()
