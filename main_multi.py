@@ -3,6 +3,21 @@ import depthai as dai
 import time
 import cv2
 
+# --- FPS counter (latest 100 samples) ---
+class FPSCounter:
+    def __init__(self):
+        self.frame_times = []
+
+    def tick(self):
+        now = time.time()
+        self.frame_times.append(now)
+        self.frame_times = self.frame_times[-100:]
+
+    def getFps(self):
+        if len(self.frame_times) <= 1:
+            return 0.0
+        return (len(self.frame_times) - 1) / (self.frame_times[-1] - self.frame_times[0])
+
 from utils.arguments import initialize_argparser
 from utils.apriltag_node import AprilTagAnnotationNode
 from utils.apriltag_warp_node import AprilTagWarpNode
@@ -27,6 +42,10 @@ SYNC_THRESHOLD_SEC = 1.0 / (2 * TARGET_FPS)  # Max drift to accept as "in sync"
 _, args = initialize_argparser()
 panel_width, panel_height = map(int, args.panel_size.split(","))
 
+# Derive effective FPS once args are known and keep all sync math consistent
+EFFECTIVE_FPS = int(args.fps_limit) if args.fps_limit else TARGET_FPS
+SYNC_THRESHOLD_SEC = 1.0 / (2 * EFFECTIVE_FPS)
+
  # Visualizer connection
 visualizer = dai.RemoteConnection(httpPort=8082)
 
@@ -41,7 +60,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     frame_type = (
         dai.ImgFrame.Type.BGR888i if platform == "RVC4" else dai.ImgFrame.Type.BGR888p
     )
-    fps_limit = args.fps_limit if args.fps_limit else TARGET_FPS
+    fps_limit = EFFECTIVE_FPS
 
     cam = pipeline.create(dai.node.Camera).build(socket, sensorFps=fps_limit)
     cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=100)
@@ -74,7 +93,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     ).build(source_out)
 
     # Latest-only sampler using PTP-slotted timestamps so analyzer compares aligned frames across devices
-    sampling_node = FrameSamplingNode(ptp_slot_period_sec=1.0 / TARGET_FPS).build(warp_node.out)
+    sampling_node = FrameSamplingNode(ptp_slot_period_sec=1.0 / EFFECTIVE_FPS).build(warp_node.out)
 
     # Analyze LED grid on the sampled (latest) crop
     led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.3).build(sampling_node.out)
@@ -166,6 +185,9 @@ with contextlib.ExitStack() as stack:
     for p in pipelines:
         visualizer.registerPipeline(p)
 
+    # Per-queue FPS counters (to mirror reference script behavior)
+    fpsCounters = [FPSCounter() for _ in sync_queues]
+
 
     # Synchronization state
     latest_sync_frames = {}  # key = device_idx, value = sync frame
@@ -182,6 +204,7 @@ with contextlib.ExitStack() as stack:
         for idx, sync_queue in enumerate(sync_queues):
             while sync_queue.has():
                 latest_sync_frames[idx] = sync_queue.get()
+                fpsCounters[idx].tick()
                 if not receivedFrames[idx]:
                     print(f"=== Device ready: {device_ids[idx]}")
                     receivedFrames[idx] = True
@@ -200,10 +223,7 @@ with contextlib.ExitStack() as stack:
         for idx, sync_queue in enumerate(sync_queues):
             while sync_queue.has():
                 latest_sync_frames[idx] = sync_queue.get()
-                if not receivedFrames[idx]:
-                    print(f"=== Received frame from {device_ids[idx]}")
-                    latest_sync_frames.pop(idx, None)
-                    receivedFrames[idx] = True
+                fpsCounters[idx].tick()
                 frameReceivedThisIter = True
 
         if frameReceivedThisIter and not anyFrameEver:
@@ -215,11 +235,12 @@ with contextlib.ExitStack() as stack:
 
         # Check synchronization: need at least one frame from every device
         if len(latest_sync_frames) == len(sync_queues):
-            ts_values = [
-                f.getTimestamp(dai.CameraExposureOffset.END).total_seconds() 
-                for f in latest_sync_frames.values()
-            ]
-            delta = max(ts_values) - min(ts_values)
+            ordered_idxs = list(range(len(sync_queues)))
+            ts_map = {
+                i: latest_sync_frames[i].getTimestamp(dai.CameraExposureOffset.END).total_seconds()
+                for i in ordered_idxs
+            }
+            delta = max(ts_map.values()) - min(ts_map.values())
 
             # Track sync status and only clear when frames are aligned
             if delta <= SYNC_THRESHOLD_SEC:
@@ -227,13 +248,13 @@ with contextlib.ExitStack() as stack:
 
                 # --- Build side-by-side composite of aligned frames ---
                 imgs = []
-                ordered_idxs = list(range(len(sync_queues)))
                 for i in ordered_idxs:
                     msg = latest_sync_frames[i]
                     frame = msg.getCvFrame()
+                    fps = fpsCounters[i].getFps()
                     cv2.putText(
                         frame,
-                        f"{device_ids[i]} | ts: {ts_values[i]:.6f}s",
+                        f"{device_ids[i]} | ts: {ts_map[i]:.6f}s | FPS:{fps:.2f}",
                         (20, 40),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.6,
@@ -243,14 +264,17 @@ with contextlib.ExitStack() as stack:
                     )
                     imgs.append(frame)
 
+                # Match reference script banner semantics (1 ms tightness indicator)
                 delta_ms = delta * 1e3
+                sync_status = "in sync" if abs(delta) < 0.001 else "out of sync"
+                color = (0, 255, 0) if sync_status == "in sync" else (0, 0, 255)
                 cv2.putText(
                     imgs[0],
-                    f"in sync | Δ = {delta_ms:.3f} ms",
+                    f"{sync_status} | Δ = {delta_ms:.3f} ms",
                     (20, 80),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.7,
-                    (0, 255, 0),
+                    color,
                     2,
                     cv2.LINE_AA,
                 )
