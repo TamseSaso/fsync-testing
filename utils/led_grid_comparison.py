@@ -222,6 +222,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         intervals_offset: int,
         intervals_offset_real: float,
         lead_text: str,
+        leds_apart_real: float,
+        leds_apart_int: int,
         onA: int,
         onB: int,
         overlap: int,
@@ -255,16 +257,19 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         put(127, f"Intervals offset (int) ~ {intervals_offset}  ({lead_text})")
         dt_seconds = intervals_offset_real * (self.led_period_us / 1e6)
         put(145, f"Intervals offset (real) ~ {intervals_offset_real:.3f}   |   dT ~ {dt_seconds:.6f} s")
+        # LED-step offset along scan order (top→bottom, left→right)
+        N = self.grid_size * (self.grid_size - 1)
+        put(162, f"LEDs apart (scan: top→bottom, left→right) ~ {leds_apart_real:.2f} of {N}  |  (~{leds_apart_int} LEDs)")
 
-        # Metrics
-        put(175, f"ON A={onA}, ON B={onB}, Overlap={overlap}")
-        put(200, f"RecallA={recallA:.3f}, RecallB={recallB:.3f}, IoU={iou:.3f}")
+        # Metrics (pushed down)
+        put(182, f"ON A={onA}, ON B={onB}, Overlap={overlap}")
+        put(205, f"RecallA={recallA:.3f}, RecallB={recallB:.3f}, IoU={iou:.3f}")
         if passed is None:
-            put(230, "Verdict: N/A (config mismatch)", (0, 165, 255), scale=0.9)
+            put(232, "Verdict: N/A (config mismatch)", (0, 165, 255), scale=0.9)
         else:
             verdict = "PASS" if passed else "FAIL"
             color = (0, 255, 0) if passed else (0, 0, 255)
-            put(230, f"Verdict: {verdict}  (threshold {self.pass_ratio:.0%} on both recalls)", color, scale=0.9)
+            put(232, f"Verdict: {verdict}  (threshold {self.pass_ratio:.0%} on both recalls)", color, scale=0.9)
 
         return img
 
@@ -415,6 +420,10 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 ts_delta_sec = (tsA - tsB).total_seconds()
                 ts_delta_us = int(abs(ts_delta_sec) * 1e6)
                 intervals_from_ts_real = (ts_delta_us / self.led_period_us) if self.led_period_us > 0 else 0.0
+                # LEDs apart along scan order (top→bottom within a column, then next column)
+                N_leds = self.grid_size * (self.grid_size - 1)
+                leds_apart_real = float(intervals_from_ts_real % N_leds)
+                leds_apart_int = int(round(leds_apart_real)) % N_leds
                 # Signed real intervals based on which side lags by timestamp
                 signed_intervals_from_ts_real = (
                     intervals_from_ts_real if ts_delta_sec > 0 else
@@ -486,6 +495,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                         intervals_offset=intervals_offset,
                         intervals_offset_real=intervals_offset_real,
                         lead_text=lead_text + (" (from TS)" if not use_iou_alignment else ""),
+                        leds_apart_real=leds_apart_real,
+                        leds_apart_int=leds_apart_int,
                         onA=0, onB=0, overlap=0,
                         recallA=0.0, recallB=0.0, iou=0.0,
                         passed=None
@@ -520,6 +531,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     intervals_offset=intervals_offset,
                     intervals_offset_real=intervals_offset_real,
                     lead_text=lead_text,
+                    leds_apart_real=leds_apart_real,
+                    leds_apart_int=leds_apart_int,
                     onA=onA, onB=onB, overlap=overlap,
                     recallA=recallA, recallB=recallB, iou=iou,
                     passed=passed
