@@ -142,7 +142,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
 with contextlib.ExitStack() as stack:
     pipelines = []
     device_ids = []
-    analyzer_outputs = []
+    analyzer_queues = []
     topics_by_device = []
     liveness_refs = []  # keep strong references to nodes to prevent GC
 
@@ -156,6 +156,8 @@ with contextlib.ExitStack() as stack:
 
         socket = device.getConnectedCameras()[0]
         topics, sync_queue, analyzer_out, nodes = build_nodes_on_pipeline(pipeline, device, socket)
+        # Create analyzer host queue PRE-BUILD so DepthAI sees the HostNode link
+        analyzer_q = analyzer_out.createOutputQueue(1, False)
 
         # Add topics BEFORE starting the pipeline (queues must be created pre-build)
         if ENABLE_VISUALIZER_PIPELINES and visualizer is not None:
@@ -165,13 +167,13 @@ with contextlib.ExitStack() as stack:
 
         device_ids.append(device.getDeviceId())
         pipelines.append(pipeline)
-        analyzer_outputs.append(analyzer_out)
+        analyzer_queues.append(analyzer_q)
         topics_by_device.append(topics)
         liveness_refs.append(nodes)
 
     # Create LED grid comparison once we have at least two analyzer queues
     comparison_node = None
-    if ENABLE_VISUALIZER_COMPARISON and visualizer is not None and len(analyzer_outputs) >= 2:
+    if ENABLE_VISUALIZER_COMPARISON and visualizer is not None and len(analyzer_queues) >= 2:
         # Try to use the LED Grid output from the first device as the visual tick/overlay source
         led_vis_out = None
         for title, output, topic_type in topics_by_device[0]:
@@ -202,10 +204,7 @@ with contextlib.ExitStack() as stack:
         p.start()
         visualizer.registerPipeline(p)
 
-    # Now that pipelines are running, create analyzer queues and connect to comparison
-    analyzer_queues = []
-    for out in analyzer_outputs:
-        analyzer_queues.append(out.createOutputQueue(1, False))
+    # Connect pre-built analyzer queues to comparison node once pipelines are running
     if comparison_node is not None and len(analyzer_queues) >= 2:
         comparison_node.set_queues(analyzer_queues[0], analyzer_queues[1])
 
