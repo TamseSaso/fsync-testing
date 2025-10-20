@@ -70,6 +70,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         self.pass_ratio = float(pass_ratio)
         self._last_placeholder_time = 0.0
         self._seq_counter = 1
+        self._lastA = None  # (grid, avg, mult, speed, intervals, ts, seq)
+        self._lastB = None  # (grid, avg, mult, speed, intervals, ts, seq)
 
         # Host-side queues are provided from analyzer node outputs
         self._qA = None
@@ -152,6 +154,18 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
 
         self.out_overlay.send(self._create_imgframe(overlay, ts, seq))
         self.out_report.send(self._create_imgframe(report, ts, seq))
+
+    def _draw_waiting_report(self, missing_side: str, avail_speed: Optional[int], avail_intervals: Optional[int]) -> np.ndarray:
+        w, h = 960, 240
+        img = np.zeros((h, w, 3), dtype=np.uint8)
+        def put(y, text, color=(255, 255, 255), scale=0.8, thick=2):
+            cv2.putText(img, text, (16, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
+        put(34, "LED Sync Report", (255, 255, 0))
+        put(90, f"Waiting for stream {missing_side}…", (0, 165, 255))
+        if avail_speed is not None and avail_intervals is not None:
+            put(140, f"Seen config on other side → Speed={avail_speed}, Intervals=0b{avail_intervals:016b}")
+        put(190, "Comparison paused until both streams are available.")
+        return img
 
     # --- Visualization ----------------------------------------------------
     def _draw_overlay(self, maskA: np.ndarray, maskB: np.ndarray) -> np.ndarray:
@@ -307,21 +321,63 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 except Exception:
                     bufB = None
 
-                if bufA is None or bufB is None:
+                # Parse incoming packets and update last states
+                parsedA = parsedB = False
+                try:
+                    if bufA is not None:
+                        self._lastA = self._parse_buffer(bufA)
+                        parsedA = True
+                    if bufB is not None:
+                        self._lastB = self._parse_buffer(bufB)
+                        parsedB = True
+                except Exception as e:
+                    print(f"Comparison parse error: {e}")
+                    # If parsing failed for this iteration, continue (we may still have old state)
+                    pass
+
+                # If neither side has any state yet → keep placeholders and wait
+                if self._lastA is None and self._lastB is None:
                     now = _t.time()
                     if now - self._last_placeholder_time > 0.5:
-                        self._send_placeholder("Waiting for both LED streams...", "Make sure both analyzers are producing buffers.")
+                        self._send_placeholder("Waiting for LED analyzer streams…", "No packets received yet from either side.")
                         self._last_placeholder_time = now
                     _t.sleep(0.001)
                     continue
 
-                # Parse
-                try:
-                    gridA, avgA, multA, speedA, intervalsA, tsA, seqA = self._parse_buffer(bufA)
-                    gridB, avgB, multB, speedB, intervalsB, tsB, seqB = self._parse_buffer(bufB)
-                except Exception as e:
-                    print(f"Comparison parse error: {e}")
+                # If only one side available → render degraded overlay (one mask vs empty)
+                if (self._lastA is None) ^ (self._lastB is None):
+                    side_have = 'A' if self._lastA is not None else 'B'
+                    side_miss = 'B' if side_have == 'A' else 'A'
+                    if self._lastA is not None:
+                        grid, avg, mult, speed, intervals, ts, seq = self._lastA
+                        thr = self._dynamic_threshold(avg, mult)
+                        mask_have = self._mask_from_grid(grid, thr)
+                        mask_missing = np.zeros_like(mask_have)
+                        ts_use, seq_use = ts, seq
+                        speed_use, intervals_use = speed, intervals
+                    else:
+                        grid, avg, mult, speed, intervals, ts, seq = self._lastB
+                        thr = self._dynamic_threshold(avg, mult)
+                        mask_have = self._mask_from_grid(grid, thr)
+                        mask_missing = np.zeros_like(mask_have)
+                        ts_use, seq_use = ts, seq
+                        speed_use, intervals_use = speed, intervals
+
+                    # Full-size overlay (include config row) showing one side vs empty
+                    overlay_img = self._draw_overlay(mask_have if side_have=='A' else mask_missing,
+                                                     mask_have if side_have=='B' else mask_missing)
+                    overlay_frame = self._create_imgframe(overlay_img, ts_use, seq_use)
+                    self.out_overlay.send(overlay_frame)
+
+                    report_img = self._draw_waiting_report(side_miss, speed_use, intervals_use)
+                    report_frame = self._create_imgframe(report_img, ts_use, seq_use)
+                    self.out_report.send(report_frame)
+                    _t.sleep(0.001)
                     continue
+
+                # From here on, both sides have some state (may be updated this tick)
+                gridA, avgA, multA, speedA, intervalsA, tsA, seqA = self._lastA
+                gridB, avgB, multB, speedB, intervalsB, tsB, seqB = self._lastB
 
                 # Avoid re-processing identical seq pairs
                 if seqA == last_seqA and seqB == last_seqB:
