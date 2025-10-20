@@ -43,8 +43,8 @@ panel_width, panel_height = map(int, args.panel_size.split(","))
 EFFECTIVE_FPS = int(args.fps_limit) if args.fps_limit else TARGET_FPS
 # Sample once every 5 seconds using PTP-slotted timestamps
 SAMPLING_PERIOD_SEC = 5.0
-# Tolerance for cross-device alignment when we latch the first frame after each 5s boundary
-SYNC_THRESHOLD_SEC = 0.050  # 50 ms tolerance
+# Tolerance for cross-device alignment (match reference script: half-frame at current FPS)
+SYNC_THRESHOLD_SEC = 1.0 / (2 * EFFECTIVE_FPS)
 # Keep snapshot/print cadence equal to the sampling period
 SNAPSHOT_INTERVAL_SEC = SAMPLING_PERIOD_SEC
 
@@ -52,7 +52,7 @@ SNAPSHOT_INTERVAL_SEC = SAMPLING_PERIOD_SEC
 ENABLE_VISUALIZER_PIPELINES = False   # per-device/topic streams OFF
 ENABLE_VISUALIZER_COMPARISON = True   # comparison overlay/report ONLY
 # Disable local OpenCV window (we only use the comparison visualizer topics)
-SHOW_LOCAL_WINDOW = False
+SHOW_LOCAL_WINDOW = True
 visualizer = None
 if ENABLE_VISUALIZER_PIPELINES or ENABLE_VISUALIZER_COMPARISON:
     visualizer = dai.RemoteConnection(httpPort=8082)
@@ -62,7 +62,7 @@ if ENABLE_VISUALIZER_PIPELINES or ENABLE_VISUALIZER_COMPARISON:
 def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: dai.CameraBoardSocket):
     """Build the same processing nodes as main.py on the given pipeline/socket.
 
-    Returns topics for visualizer and a sync queue for timestamp monitoring.
+    Returns topics for visualizer and a continuous host frame queue for sync/display.
     """
     platform = device.getPlatform().name
     frame_type = (
@@ -119,8 +119,8 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
         ("LED Grid (32x32)", led_visualizer.out, "led"),
     ]
     
-    # Create a separate sync queue for timestamp monitoring (non-blocking)
-    sync_queue = sampling_node.out.createOutputQueue(1, False)
+    # Create a continuous host frame queue for sync/display (matches reference script behavior)
+    sync_queue = source_out.createOutputQueue(1, False)
     
     # Return topics, sync queue, analyzer queue, and strong references to nodes to prevent premature GC
     nodes = [cam, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
@@ -229,7 +229,6 @@ with contextlib.ExitStack() as stack:
     if SHOW_LOCAL_WINDOW:
         cv2.namedWindow("synced_view", cv2.WINDOW_NORMAL)
 
-    next_snapshot_time = time.monotonic() + SNAPSHOT_INTERVAL_SEC  # wait before first capture
     
     # Unified visualizer loop with synchronization monitoring
     while True:
@@ -280,28 +279,23 @@ with contextlib.ExitStack() as stack:
                     )
                     imgs.append(frame)
 
-                # Only take/display a PTP snapshot every SNAPSHOT_INTERVAL_SEC seconds
-                if time.monotonic() >= next_snapshot_time:
-                    # Match reference script banner semantics (1 ms tightness indicator)
-                    delta_ms = delta * 1e3
-                    sync_status = "in sync" if abs(delta) < 0.001 else "out of sync"
-                    color = (0, 255, 0) if sync_status == "in sync" else (0, 0, 255)
-                    cv2.putText(
-                        imgs[0],
-                        f"{sync_status} | Δ = {delta_ms:.3f} ms",
-                        (20, 80),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7,
-                        color,
-                        2,
-                        cv2.LINE_AA,
-                    )
-
-                    if SHOW_LOCAL_WINDOW:
-                        cv2.imshow("synced_view", cv2.hconcat(imgs))
-                    print(f"=== Captured PTP snapshot; Δ={delta_ms:.3f} ms — waiting {SNAPSHOT_INTERVAL_SEC:.1f}s before next")
-                    next_snapshot_time = time.monotonic() + SNAPSHOT_INTERVAL_SEC
-                    latest_sync_frames.clear()  # wait for next aligned batch
+                # Continuous display (match reference script): show aligned frames every iteration
+                delta_ms = delta * 1e3
+                sync_status = "in sync" if abs(delta) < 0.001 else "out of sync"
+                color = (0, 255, 0) if sync_status == "in sync" else (0, 0, 255)
+                cv2.putText(
+                    imgs[0],
+                    f"{sync_status} | Δ = {delta_ms:.3f} ms",
+                    (20, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    color,
+                    2,
+                    cv2.LINE_AA,
+                )
+                if SHOW_LOCAL_WINDOW:
+                    cv2.imshow("synced_view", cv2.hconcat(imgs))
+                latest_sync_frames.clear()  # wait for next aligned batch
             else:
                 sync_stats["out_of_sync"] += 1
                 # Do not clear when out of sync; keep latest frames until they align
