@@ -9,6 +9,7 @@ from utils.sampling_node import FrameSamplingNode
 from utils.led_grid_analyzer import LEDGridAnalyzer
 from utils.led_grid_visualizer import LEDGridVisualizer
 from utils.video_annotation_composer import VideoAnnotationComposer
+from utils.led_grid_comparison import LEDGridComparison
 
 
 # Define two devices here; put master first. Update to your IPs/IDs.
@@ -76,6 +77,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
 
     # Analyze LED grid on the sampled (latest) crop
     led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.3).build(sampling_node.out)
+    analyzer_queue = led_analyzer.out.createOutputQueue(1, False)
     led_visualizer = LEDGridVisualizer(output_size=(1024, 1024)).build(led_analyzer.out)
 
     # Compose video + apriltag annotations
@@ -92,9 +94,9 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     # Create a separate sync queue for timestamp monitoring (non-blocking)
     sync_queue = sampling_node.out.createOutputQueue(1, False)
     
-    # Return topics, sync queue, and strong references to nodes to prevent premature GC
+    # Return topics, sync queue, analyzer queue, and strong references to nodes to prevent premature GC
     nodes = [cam, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
-    return topics, sync_queue, nodes
+    return topics, sync_queue, analyzer_queue, nodes
 
 
 with contextlib.ExitStack() as stack:
@@ -102,8 +104,10 @@ with contextlib.ExitStack() as stack:
     device_ids = []
     pipelines = []
     liveness_refs = []  # keep strong references to host nodes per pipeline
+    analyzer_queues = []  # LED analyzer output queues for comparison
+    comparison_node = None
 
-    for deviceInfo in DEVICE_INFOS:
+    for idx, deviceInfo in enumerate(DEVICE_INFOS):
         pipeline = stack.enter_context(dai.Pipeline(dai.Device(deviceInfo)))
         device = pipeline.getDefaultDevice()
 
@@ -112,12 +116,24 @@ with contextlib.ExitStack() as stack:
         print("    Num of cameras:", len(device.getConnectedCameras()))
 
         socket = device.getConnectedCameras()[0]
-        topics, sync_queue, nodes = build_nodes_on_pipeline(pipeline, device, socket)
+        topics, sync_queue, analyzer_queue, nodes = build_nodes_on_pipeline(pipeline, device, socket)
 
         # Register topics with visualizer (using Node.Output objects)
         suffix = f" [{device.getDeviceId()}]"
         for title, output, topic_type in topics:
             visualizer.addTopic(title + suffix, output, topic_type)
+
+        analyzer_queues.append(analyzer_queue)
+
+        if idx == 0 and comparison_node is None:
+            comparison_node = LEDGridComparison(
+                grid_size=32,
+                output_size=(1024, 1024),
+                led_period_us=160.0,
+                pass_ratio=0.90
+            ).build()
+            visualizer.addTopic("LED Overlay [comparison]", comparison_node.out_overlay, "led")
+            visualizer.addTopic("LED Sync Report [comparison]", comparison_node.out_report, "video")
 
         # Removed pipeline.start() and visualizer.registerPipeline(pipeline) here
 
@@ -126,6 +142,9 @@ with contextlib.ExitStack() as stack:
         device_ids.append(device.getDeviceId())
         pipelines.append(pipeline)
         liveness_refs.append(nodes)
+
+    if comparison_node is not None and len(analyzer_queues) >= 2:
+        comparison_node.set_queues(analyzer_queues[0], analyzer_queues[1])
 
     # Start all pipelines together after building everything
     for p in pipelines:
