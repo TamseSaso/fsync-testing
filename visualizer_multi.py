@@ -70,7 +70,7 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
     node_out = manip.out
     output = node_out.createOutputQueue()
     if SET_MANUAL_EXPOSURE:
-        camRgb.initialControl.setManualExposure(1000, 100)
+        camRgb.initialControl.setManualExposure(6000, 100)
     # Backwards-compatible return plus node output for visualizer usage
     return pipeline, output, node_out
 
