@@ -4,7 +4,6 @@ import cv2
 import numpy as np
 import depthai as dai
 from typing import Optional, Tuple
-from datetime import timedelta
 
 
 class LEDGridComparison(dai.node.ThreadedHostNode):
@@ -64,16 +63,20 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         # Host-side queues are provided from analyzer node outputs
         self._qA = None
         self._qB = None
-        # Keep last tick for timestamps in placeholder frames
-        self._last_tick_ts = None
-        self._last_tick_seq = 0
 
     # --- Public API -------------------------------------------------------
     def build(self, tick_source: Optional[dai.Node.Output] = None) -> "LEDGridComparison":
         """
         Optionally attach this host node to a pipeline by linking any stream as a lightweight 'tick'.
         If no tick_source is provided, the node will still run but won't be bound to a specific stream.
+        This method defensively creates the tick input if missing (for older copies).
         """
+        if not hasattr(self, "_tickIn") or self._tickIn is None:
+            self._tickIn = self.createInput()
+            self._tickIn.setPossibleDatatypes([
+                (dai.DatatypeEnum.Buffer, True),
+                (dai.DatatypeEnum.ImgFrame, True),
+            ])
         if tick_source is not None:
             tick_source.link(self._tickIn)
         return self
@@ -213,24 +216,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
 
         return img
 
-    def _now_ts(self):
-        # Fallback timestamp if no tick available
-        return self._last_tick_ts if self._last_tick_ts is not None else timedelta(seconds=0)
-
-    def _draw_placeholders(self, msgA: str, msgB: str) -> Tuple[np.ndarray, np.ndarray]:
-        # Overlay placeholder
-        overlay = np.zeros((self.output_h, self.output_w, 3), dtype=np.uint8)
-        cv2.putText(overlay, "LED Overlay [comparison]", (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
-        cv2.putText(overlay, msgA, (16, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
-        cv2.putText(overlay, msgB, (16, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
-        # Report placeholder
-        report = np.zeros((240, 960, 3), dtype=np.uint8)
-        cv2.putText(report, "LED Sync Report", (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
-        cv2.putText(report, msgA, (16, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
-        cv2.putText(report, msgB, (16, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
-        cv2.putText(report, "Streams will update automatically once inputs are ready.", (16, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 2)
-        return overlay, report
-
     # --- Main loop --------------------------------------------------------
     def run(self) -> None:
         print(
@@ -247,16 +232,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
             try:
                 # Ensure queues available
                 if self._qA is None or self._qB is None:
-                    overlay_img, report_img = self._draw_placeholders(
-                        "Waiting for analyzer queues...",
-                        "Provide two LEDGridAnalyzer outputs to compare."
-                    )
-                    ts = self._now_ts()
-                    seq = self._last_tick_seq
-                    self.out_overlay.send(self._create_imgframe(overlay_img, ts, seq))
-                    self.out_report.send(self._create_imgframe(report_img, ts, seq))
                     import time as _t
-                    _t.sleep(0.03)
+                    _t.sleep(0.005)
                     continue
 
                 # Drain both queues to the latest elements (non-blocking preferred)
@@ -268,11 +245,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                         m = m() if m is not None else self._qA.get()  # tryGet() if exists, else blocking get()
                         if m is None:
                             break
-                        try:
-                            self._last_tick_ts = m.getTimestamp()
-                            self._last_tick_seq = m.getSequenceNum()
-                        except Exception:
-                            pass
                         bufA = m
                 except Exception:
                     bufA = None
@@ -283,25 +255,13 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                         m = m() if m is not None else self._qB.get()
                         if m is None:
                             break
-                        try:
-                            self._last_tick_ts = m.getTimestamp()
-                            self._last_tick_seq = m.getSequenceNum()
-                        except Exception:
-                            pass
                         bufB = m
                 except Exception:
                     bufB = None
 
                 if bufA is None or bufB is None:
-                    needA = "OK" if bufA is not None else "Waiting for stream A..."
-                    needB = "OK" if bufB is not None else "Waiting for stream B..."
-                    overlay_img, report_img = self._draw_placeholders(needA, needB)
-                    ts = self._now_ts()
-                    seq = self._last_tick_seq
-                    self.out_overlay.send(self._create_imgframe(overlay_img, ts, seq))
-                    self.out_report.send(self._create_imgframe(report_img, ts, seq))
                     import time as _t
-                    _t.sleep(0.03)
+                    _t.sleep(0.001)
                     continue
 
                 # Parse
