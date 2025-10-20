@@ -119,8 +119,8 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
         ("LED Grid (32x32)", led_visualizer.out, "led"),
     ]
     
-    # Create a continuous host frame queue for sync/display (matches reference script behavior)
-    sync_queue = None  # No extra host queue; Visualizer topics handle streaming
+    # Create a host queue on the base stream to ensure a HostNode link exists pre-build
+    sync_queue = source_out.createOutputQueue(1, False)
     
     # Return topics, sync queue, analyzer queue, and strong references to nodes to prevent premature GC
     nodes = [cam, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
@@ -134,6 +134,7 @@ with contextlib.ExitStack() as stack:
     device_ids = []
     analyzer_outputs = []
     topics_by_device = []
+    liveness_refs = []  # keep strong references to nodes to prevent GC
 
     for deviceInfo in DEVICE_INFOS:
         pipeline = stack.enter_context(dai.Pipeline(dai.Device(deviceInfo)))
@@ -144,7 +145,7 @@ with contextlib.ExitStack() as stack:
         print("    Num of cameras:", len(device.getConnectedCameras()))
 
         socket = device.getConnectedCameras()[0]
-        topics, sync_queue, analyzer_out, _ = build_nodes_on_pipeline(pipeline, device, socket)
+        topics, sync_queue, analyzer_out, nodes = build_nodes_on_pipeline(pipeline, device, socket)
 
         # Add topics BEFORE starting the pipeline (queues must be created pre-build)
         if ENABLE_VISUALIZER_PIPELINES and visualizer is not None:
@@ -156,6 +157,7 @@ with contextlib.ExitStack() as stack:
         pipelines.append(pipeline)
         analyzer_outputs.append(analyzer_out)
         topics_by_device.append(topics)
+        liveness_refs.append(nodes)
 
     # Create LED grid comparison once we have at least two analyzer queues
     comparison_node = None
