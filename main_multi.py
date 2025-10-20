@@ -34,7 +34,7 @@ DEVICE_INFOS = [
 ]
 
 # Synchronization settings
-TARGET_FPS = 90  # Will be adjusted based on device platform
+TARGET_FPS = 60  # Will be adjusted based on device platform
 
 # Parse arguments used by the processing nodes (panel, apriltag, etc.)
 _, args = initialize_argparser()
