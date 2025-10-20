@@ -115,12 +115,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
     def _mask_from_grid(self, grid: np.ndarray, thr: float) -> np.ndarray:
         return (grid > thr)
 
-    def _reverse_bits16(self, x: int) -> int:
-        x &= 0xFFFF
-        b = 0
-        for i in range(16):
-            b = (b << 1) | ((x >> i) & 1)
-        return b
 
     def _roll_columns(self, mask: np.ndarray, cols: int) -> np.ndarray:
         if cols == 0:
@@ -232,8 +226,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         recallB: float,
         iou: float,
         passed: Optional[bool],
-        flipB: Optional[bool] = None,
-        intervals_reversed: Optional[bool] = None,
     ) -> np.ndarray:
         w, h = 960, 240
         img = np.zeros((h, w, 3), dtype=np.uint8)
@@ -248,8 +240,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         cfg_text = f"Config check (Speed={speed}, Intervals=0b{intervals:016b})"
         if cfg_ok:
             put(70, cfg_text + " -> MATCH", (0, 255, 0))
-            if intervals_reversed:
-                put(90, "Intervals matched after bit-reversal (B mirrored).", (200, 200, 200), scale=0.6, thick=2)
         else:
             put(70, cfg_text + " -> MISMATCH", (0, 165, 255))
             put(100, "Skipping LED placement comparison due to config mismatch.", (0, 165, 255))
@@ -257,9 +247,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
 
         # Timing / shift
         put(110, f"Δt ≈ {dt_us_abs} us   |   Column shift ≈ {shift_cols}")
-
-        if flipB:
-            put(128, "Applied horizontal flip on stream B for alignment.", (200, 200, 200), scale=0.6, thick=2)
 
         # Metrics
         put(145, f"ON A={onA}, ON B={onB}, Overlap={overlap}")
@@ -399,9 +386,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     continue
                 last_seqA, last_seqB = seqA, seqB
 
-                # Config check (allow B to be horizontally mirrored → intervals reversed)
-                intervals_rev_match = (intervalsA == self._reverse_bits16(intervalsB))
-                cfg_ok = (speedA == speedB) and ((intervalsA == intervalsB) or intervals_rev_match)
+                # Config check (strict match)
+                cfg_ok = (speedA == speedB) and (intervalsA == intervalsB)
 
                 # Build masks using each stream's dynamic threshold
                 thrA = self._dynamic_threshold(avgA, multA)
@@ -415,24 +401,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 dt_us_abs = abs(dt_us)
                 # Positive dt_us -> A is newer; roll B forward by +shift_cols
                 shift_cols_signed = int(round(dt_us / self.led_period_us))
-                # Candidate 1: no flip, shift by +s
-                cand_no = self._roll_columns(maskB_full, shift_cols_signed)
-                # Candidate 2: horizontal flip, shift by -s (time axis reversed)
-                cand_flip = self._roll_columns(np.fliplr(maskB_full), -shift_cols_signed)
-
-                # Compare IoU on LED rows (exclude bottom config row)
-                A_eval = maskA_full[:-1, :]
-                B_no_eval = cand_no[:-1, :]
-                B_flip_eval = cand_flip[:-1, :]
-                overlap_no = int(np.logical_and(A_eval, B_no_eval).sum())
-                union_no = int(np.logical_or(A_eval, B_no_eval).sum())
-                iou_no = (overlap_no / union_no) if union_no > 0 else 0.0
-                overlap_fl = int(np.logical_and(A_eval, B_flip_eval).sum())
-                union_fl = int(np.logical_or(A_eval, B_flip_eval).sum())
-                iou_fl = (overlap_fl / union_fl) if union_fl > 0 else 0.0
-
-                use_flip = iou_fl > iou_no
-                shiftedB_full = cand_flip if use_flip else cand_no
+                shiftedB_full = self._roll_columns(maskB_full, shift_cols_signed)
 
                 # Prepare overlay image from full masks (includes bottom row)
                 overlay_img = self._draw_overlay(maskA_full, shiftedB_full)
@@ -449,9 +418,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                         shift_cols=abs(shift_cols_signed),
                         onA=0, onB=0, overlap=0,
                         recallA=0.0, recallB=0.0, iou=0.0,
-                        passed=None,
-                        flipB=None,
-                        intervals_reversed=None
+                        passed=None
                     )
                     report_frame = self._create_imgframe(report_img, tsA if dt_us >= 0 else tsB, max(seqA, seqB))
                     self.out_report.send(report_frame)
@@ -482,9 +449,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     shift_cols=abs(shift_cols_signed),
                     onA=onA, onB=onB, overlap=overlap,
                     recallA=recallA, recallB=recallB, iou=iou,
-                    passed=passed,
-                    flipB=use_flip,
-                    intervals_reversed=intervals_rev_match
+                    passed=passed
                 )
                 report_frame = self._create_imgframe(report_img, tsA if dt_us >= 0 else tsB, max(seqA, seqB))
                 self.out_report.send(report_frame)
