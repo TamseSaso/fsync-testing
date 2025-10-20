@@ -325,7 +325,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
 
                 # Avoid re-processing identical seq pairs
                 if seqA == last_seqA and seqB == last_seqB:
-                    import time as _t
                     _t.sleep(0.0005)
                     continue
                 last_seqA, last_seqB = seqA, seqB
