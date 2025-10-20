@@ -225,6 +225,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         recallB: float,
         iou: float,
         passed: Optional[bool],
+        flipB: Optional[bool] = None,
     ) -> np.ndarray:
         w, h = 960, 240
         img = np.zeros((h, w, 3), dtype=np.uint8)
@@ -246,6 +247,9 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
 
         # Timing / shift
         put(110, f"Δt ≈ {dt_us_abs} us   |   Column shift ≈ {shift_cols}")
+
+        if flipB:
+            put(128, "Applied horizontal flip on stream B for alignment.", (200, 200, 200), scale=0.6, thick=2)
 
         # Metrics
         put(145, f"ON A={onA}, ON B={onB}, Overlap={overlap}")
@@ -400,7 +404,24 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 dt_us_abs = abs(dt_us)
                 # Positive dt_us -> A is newer; roll B forward by +shift_cols
                 shift_cols_signed = int(round(dt_us / self.led_period_us))
-                shiftedB_full = self._roll_columns(maskB_full, shift_cols_signed)
+                # Candidate 1: no flip, shift by +s
+                cand_no = self._roll_columns(maskB_full, shift_cols_signed)
+                # Candidate 2: horizontal flip, shift by -s (time axis reversed)
+                cand_flip = self._roll_columns(np.fliplr(maskB_full), -shift_cols_signed)
+
+                # Compare IoU on LED rows (exclude bottom config row)
+                A_eval = maskA_full[:-1, :]
+                B_no_eval = cand_no[:-1, :]
+                B_flip_eval = cand_flip[:-1, :]
+                overlap_no = int(np.logical_and(A_eval, B_no_eval).sum())
+                union_no = int(np.logical_or(A_eval, B_no_eval).sum())
+                iou_no = (overlap_no / union_no) if union_no > 0 else 0.0
+                overlap_fl = int(np.logical_and(A_eval, B_flip_eval).sum())
+                union_fl = int(np.logical_or(A_eval, B_flip_eval).sum())
+                iou_fl = (overlap_fl / union_fl) if union_fl > 0 else 0.0
+
+                use_flip = iou_fl > iou_no
+                shiftedB_full = cand_flip if use_flip else cand_no
 
                 # Prepare overlay image from full masks (includes bottom row)
                 overlay_img = self._draw_overlay(maskA_full, shiftedB_full)
@@ -448,7 +469,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     shift_cols=abs(shift_cols_signed),
                     onA=onA, onB=onB, overlap=overlap,
                     recallA=recallA, recallB=recallB, iou=iou,
-                    passed=passed
+                    passed=passed,
+                    flipB=use_flip
                 )
                 report_frame = self._create_imgframe(report_img, tsA if dt_us >= 0 else tsB, max(seqA, seqB))
                 self.out_report.send(report_frame)
