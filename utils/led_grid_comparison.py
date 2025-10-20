@@ -243,7 +243,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         cfg_text = f"Config check (Speed={speed}, Intervals=0b{intervals:016b})"
         # Constants for report
         num_leds_no_config = self.grid_size * (self.grid_size - 1)
-        put(55, f"LEDs considered (no config row) = {num_leds_no_config} | Period = {int(self.led_period_us)} \u00B5s", (200, 200, 200))
+        put(55, f"LEDs considered (no config row) = {num_leds_no_config} | Period = {int(self.led_period_us)} us", (200, 200, 200))
         if cfg_ok:
             put(80, cfg_text + " -> MATCH", (0, 255, 0))
         else:
@@ -251,10 +251,10 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
             put(100, "Skipping LED placement comparison due to config mismatch.", (0, 165, 255))
 
         # Timing / shift
-        put(110, f"Δt ≈ {dt_us_abs} us   |   Column shift ≈ {shift_cols}")
-        put(127, f"Intervals offset (int) ≈ {intervals_offset}  ({lead_text})")
+        put(110, f"dT ~ {dt_us_abs} us   |   Column shift ~ {shift_cols}")
+        put(127, f"Intervals offset (int) ~ {intervals_offset}  ({lead_text})")
         dt_seconds = intervals_offset_real * (self.led_period_us / 1e6)
-        put(145, f"Intervals offset (real) ≈ {intervals_offset_real:.3f}   |   Δt ≈ {dt_seconds:.6f} s")
+        put(145, f"Intervals offset (real) ~ {intervals_offset_real:.3f}   |   dT ~ {dt_seconds:.6f} s")
 
         # Metrics
         put(175, f"ON A={onA}, ON B={onB}, Overlap={overlap}")
