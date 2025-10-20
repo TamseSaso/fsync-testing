@@ -191,6 +191,8 @@ with contextlib.ExitStack() as stack:
     # Start all pipelines after all topics (including comparison) are registered
     for p in pipelines:
         p.start()
+        visualizer.registerPipeline(p)
+
 
     # Minimal loop: keep queues flowing; no PTP sync-gating or OpenCV windows
     receivedFrames = [False for _ in queues]
