@@ -123,17 +123,30 @@ with contextlib.ExitStack() as stack:
         for title, output, topic_type in topics:
             visualizer.addTopic(title + suffix, output, topic_type)
 
-        analyzer_queues.append(analyzer_queue)
+        # Capture LED grid visualization output for tick source
+        led_vis_out = None
+        for title, output, topic_type in topics:
+            if topic_type == "led" and "LED Grid" in title:
+                led_vis_out = output
+                break
 
         if idx == 0 and comparison_node is None:
+            if led_vis_out is None:
+                # Fallback: use the sampled panel stream as tick if LED Grid wasn't found
+                for title, output, topic_type in topics:
+                    if topic_type == "panel" and "Sampled Panel" in title:
+                        led_vis_out = output
+                        break
             comparison_node = LEDGridComparison(
                 grid_size=32,
                 output_size=(1024, 1024),
                 led_period_us=160.0,
                 pass_ratio=0.90
-            ).build()
+            ).build(led_vis_out if led_vis_out is not None else topics[0][1])
             visualizer.addTopic("LED Overlay [comparison]", comparison_node.out_overlay, "led")
             visualizer.addTopic("LED Sync Report [comparison]", comparison_node.out_report, "video")
+
+        analyzer_queues.append(analyzer_queue)
 
         # Removed pipeline.start() and visualizer.registerPipeline(pipeline) here
 

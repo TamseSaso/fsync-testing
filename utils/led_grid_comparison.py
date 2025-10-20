@@ -53,6 +53,13 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         self.out_report = self.createOutput()
         self.out_report.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
 
+        # Lightweight tick input to attach/schedule this host node in a pipeline
+        self._tickIn = self.createInput()
+        self._tickIn.setPossibleDatatypes([
+            (dai.DatatypeEnum.Buffer, True),
+            (dai.DatatypeEnum.ImgFrame, True),
+        ])
+
         self.grid_size = grid_size
         self.output_w, self.output_h = output_size
         self.cell_w = max(1, self.output_w // self.grid_size)
@@ -65,8 +72,12 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         self._qB = None
 
     # --- Public API -------------------------------------------------------
-    def build(self) -> "LEDGridComparison":
-        # Nothing to link; return self for chaining
+    def build(self, tick_source: dai.Node.Output) -> "LEDGridComparison":
+        """
+        Attach this host node to a pipeline by linking any stream as a lightweight 'tick'.
+        We don't read payloads from this input for logic; it's only to bind/schedule the node.
+        """
+        tick_source.link(self._tickIn)
         return self
 
     def set_queues(self, qA, qB) -> None:
@@ -218,6 +229,20 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
 
         while self.isRunning():
             try:
+                # Drain tick input (non-blocking) to avoid pipeline backpressure
+                try:
+                    while True:
+                        try:
+                            m = self._tickIn.tryGet()
+                        except AttributeError:
+                            if not self._tickIn.has():
+                                break
+                            m = self._tickIn.get()
+                        if m is None:
+                            break
+                except Exception:
+                    pass
+
                 # Ensure queues available
                 if self._qA is None or self._qB is None:
                     import time as _t
