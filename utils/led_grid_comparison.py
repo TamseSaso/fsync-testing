@@ -395,17 +395,27 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 maskA_full = self._mask_from_grid(gridA, thrA)
                 maskB_full = self._mask_from_grid(gridB, thrB)
 
-                # Compute time delta and column shift (use signed shift to roll earlier stream forward)
-                dt = tsA - tsB
-                dt_us = int(round(dt.total_seconds() * 1e6))
-                dt_us_abs = abs(dt_us)
-                # Positive dt_us -> A is newer; roll B forward by +shift_cols
-                shift_cols_signed = int(round(dt_us / self.led_period_us))
+                # Estimate best column alignment by scoring IoU across shifts (robust to unsynced clocks)
+                A_eval = maskA_full[:-1, :]
+                max_shift = self.grid_size  # search full width
+                best_s = 0
+                best_iou_tmp = -1.0
+                for s in range(-max_shift, max_shift + 1):
+                    B_eval = np.roll(maskB_full[:-1, :], s, axis=1)
+                    overlap_tmp = int(np.logical_and(A_eval, B_eval).sum())
+                    union_tmp = int(np.logical_or(A_eval, B_eval).sum())
+                    iou_tmp = (overlap_tmp / union_tmp) if union_tmp > 0 else 0.0
+                    if iou_tmp > best_iou_tmp:
+                        best_iou_tmp = iou_tmp
+                        best_s = s
+                shift_cols_signed = int(best_s)
                 shiftedB_full = self._roll_columns(maskB_full, shift_cols_signed)
+                # Approximate Δt from columns and configured LED period
+                dt_us_abs = int(abs(shift_cols_signed) * self.led_period_us)
 
                 # Prepare overlay image from full masks (includes bottom row)
                 overlay_img = self._draw_overlay(maskA_full, shiftedB_full)
-                overlay_frame = self._create_imgframe(overlay_img, tsA if dt_us >= 0 else tsB, max(seqA, seqB))
+                overlay_frame = self._create_imgframe(overlay_img, tsA, max(seqA, seqB))
                 self.out_overlay.send(overlay_frame)
 
                 # If config mismatched -> report SKIP and continue
@@ -420,7 +430,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                         recallA=0.0, recallB=0.0, iou=0.0,
                         passed=None
                     )
-                    report_frame = self._create_imgframe(report_img, tsA if dt_us >= 0 else tsB, max(seqA, seqB))
+                    report_frame = self._create_imgframe(report_img, tsA, max(seqA, seqB))
                     self.out_report.send(report_frame)
                     continue
 
@@ -451,7 +461,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     recallA=recallA, recallB=recallB, iou=iou,
                     passed=passed
                 )
-                report_frame = self._create_imgframe(report_img, tsA if dt_us >= 0 else tsB, max(seqA, seqB))
+                report_frame = self._create_imgframe(report_img, tsA, max(seqA, seqB))
                 self.out_report.send(report_frame)
 
             except Exception as e:
