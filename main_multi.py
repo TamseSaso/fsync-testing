@@ -105,7 +105,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
 
     # Analyze LED grid on the sampled (latest) crop
     led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.3).build(sampling_node.out)
-    analyzer_queue = led_analyzer.out.createOutputQueue(1, False)
+    analyzer_out = led_analyzer.out  # Defer queue creation until after pipeline is started
     led_visualizer = LEDGridVisualizer(output_size=(1024, 1024)).build(led_analyzer.out)
 
     # Compose video + apriltag annotations
@@ -126,13 +126,13 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     nodes = [cam, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
 
 
-    return topics, sync_queue, analyzer_queue, nodes
+    return topics, sync_queue, analyzer_out, nodes
 
 
 with contextlib.ExitStack() as stack:
     pipelines = []
     device_ids = []
-    analyzer_queues = []
+    analyzer_outputs = []
     topics_by_device = []
 
     for deviceInfo in DEVICE_INFOS:
@@ -144,7 +144,7 @@ with contextlib.ExitStack() as stack:
         print("    Num of cameras:", len(device.getConnectedCameras()))
 
         socket = device.getConnectedCameras()[0]
-        topics, sync_queue, analyzer_queue, _ = build_nodes_on_pipeline(pipeline, device, socket)
+        topics, sync_queue, analyzer_out, _ = build_nodes_on_pipeline(pipeline, device, socket)
 
         # Add topics BEFORE starting the pipeline (queues must be created pre-build)
         if ENABLE_VISUALIZER_PIPELINES and visualizer is not None:
@@ -154,11 +154,12 @@ with contextlib.ExitStack() as stack:
 
         device_ids.append(device.getDeviceId())
         pipelines.append(pipeline)
-        analyzer_queues.append(analyzer_queue)
+        analyzer_outputs.append(analyzer_out)
         topics_by_device.append(topics)
 
     # Create LED grid comparison once we have at least two analyzer queues
-    if ENABLE_VISUALIZER_COMPARISON and visualizer is not None and len(analyzer_queues) >= 2:
+    comparison_node = None
+    if ENABLE_VISUALIZER_COMPARISON and visualizer is not None and len(analyzer_outputs) >= 2:
         # Try to use the LED Grid output from the first device as the visual tick/overlay source
         led_vis_out = None
         for title, output, topic_type in topics_by_device[0]:
@@ -179,7 +180,7 @@ with contextlib.ExitStack() as stack:
             output_size=(1024, 1024)
         ).build(led_vis_out)
         # Provide the two analyzer queues (master first)
-        comparison_node.set_queues(analyzer_queues[0], analyzer_queues[1])
+        # comparison_node.set_queues(analyzer_queues[0], analyzer_queues[1])
         # Expose comparison topics in the visualizer
         visualizer.addTopic("LED Overlay [comparison]", comparison_node.out_overlay, "led")
         visualizer.addTopic("LED Sync Report [comparison]", comparison_node.out_report, "video")
@@ -188,6 +189,13 @@ with contextlib.ExitStack() as stack:
     for p in pipelines:
         p.start()
         visualizer.registerPipeline(p)
+
+    # Now that pipelines are running, create analyzer queues and connect to comparison
+    analyzer_queues = []
+    for out in analyzer_outputs:
+        analyzer_queues.append(out.createOutputQueue(1, False))
+    if comparison_node is not None and len(analyzer_queues) >= 2:
+        comparison_node.set_queues(analyzer_queues[0], analyzer_queues[1])
 
 
     # Idle loop – Visualizer handles display; press 'q' to quit
