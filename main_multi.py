@@ -3,6 +3,15 @@ import depthai as dai
 import time
 import cv2
 
+from utils.arguments import initialize_argparser
+from utils.apriltag_node import AprilTagAnnotationNode
+from utils.apriltag_warp_node import AprilTagWarpNode
+from utils.sampling_node import FrameSamplingNode
+from utils.led_grid_analyzer import LEDGridAnalyzer
+from utils.led_grid_visualizer import LEDGridVisualizer
+from utils.video_annotation_composer import VideoAnnotationComposer
+from utils.led_grid_comparison import LEDGridComparison
+
 # --- FPS counter (latest 100 samples) ---
 class FPSCounter:
     def __init__(self):
@@ -18,16 +27,6 @@ class FPSCounter:
             return 0.0
         return (len(self.frame_times) - 1) / (self.frame_times[-1] - self.frame_times[0])
 
-from utils.arguments import initialize_argparser
-from utils.apriltag_node import AprilTagAnnotationNode
-from utils.apriltag_warp_node import AprilTagWarpNode
-from utils.sampling_node import FrameSamplingNode
-from utils.led_grid_analyzer import LEDGridAnalyzer
-from utils.led_grid_visualizer import LEDGridVisualizer
-from utils.video_annotation_composer import VideoAnnotationComposer
-from utils.led_grid_comparison import LEDGridComparison
-
-
 # Define two devices here; put master first. Update to your IPs/IDs.
 DEVICE_INFOS = [
     dai.DeviceInfo("10.12.211.82"),
@@ -42,12 +41,18 @@ _, args = initialize_argparser()
 panel_width, panel_height = map(int, args.panel_size.split(","))
 
 EFFECTIVE_FPS = int(args.fps_limit) if args.fps_limit else TARGET_FPS
-SYNC_THRESHOLD_SEC = 1.0 / (2 * EFFECTIVE_FPS)
-SNAPSHOT_INTERVAL_SEC = 5.0  # Wait time between PTP snapshots
+# Sample once every 5 seconds using PTP-slotted timestamps
+SAMPLING_PERIOD_SEC = 5.0
+# Tolerance for cross-device alignment when we latch the first frame after each 5s boundary
+SYNC_THRESHOLD_SEC = 0.050  # 50 ms tolerance
+# Keep snapshot/print cadence equal to the sampling period
+SNAPSHOT_INTERVAL_SEC = SAMPLING_PERIOD_SEC
 
 # Visualizer toggles: only publish the comparison to the visualizer
 ENABLE_VISUALIZER_PIPELINES = False   # per-device/topic streams OFF
 ENABLE_VISUALIZER_COMPARISON = True   # comparison overlay/report ONLY
+# Disable local OpenCV window (we only use the comparison visualizer topics)
+SHOW_LOCAL_WINDOW = False
 visualizer = None
 if ENABLE_VISUALIZER_PIPELINES or ENABLE_VISUALIZER_COMPARISON:
     visualizer = dai.RemoteConnection(httpPort=8082)
@@ -95,8 +100,8 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
         z_offset=args.z_offset,
     ).build(source_out)
 
-    # Latest-only sampler using PTP-slotted timestamps so analyzer compares aligned frames across devices
-    sampling_node = FrameSamplingNode(ptp_slot_period_sec=1.0 / EFFECTIVE_FPS).build(warp_node.out)
+    # Latest-only sampler using PTP-slotted timestamps; now one sample every 5 seconds
+    sampling_node = FrameSamplingNode(ptp_slot_period_sec=SAMPLING_PERIOD_SEC).build(warp_node.out)
 
     # Analyze LED grid on the sampled (latest) crop
     led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.3).build(sampling_node.out)
@@ -221,7 +226,8 @@ with contextlib.ExitStack() as stack:
     # Clear any buffered frames to start in lockstep
     latest_sync_frames.clear()
     print(f"=== All devices ready — starting synchronized visualization (threshold: {SYNC_THRESHOLD_SEC*1000:.2f}ms)")
-    cv2.namedWindow("synced_view", cv2.WINDOW_NORMAL)
+    if SHOW_LOCAL_WINDOW:
+        cv2.namedWindow("synced_view", cv2.WINDOW_NORMAL)
 
     next_snapshot_time = time.monotonic() + SNAPSHOT_INTERVAL_SEC  # wait before first capture
     
@@ -291,7 +297,8 @@ with contextlib.ExitStack() as stack:
                         cv2.LINE_AA,
                     )
 
-                    cv2.imshow("synced_view", cv2.hconcat(imgs))
+                    if SHOW_LOCAL_WINDOW:
+                        cv2.imshow("synced_view", cv2.hconcat(imgs))
                     print(f"=== Captured PTP snapshot; Δ={delta_ms:.3f} ms — waiting {SNAPSHOT_INTERVAL_SEC:.1f}s before next")
                     next_snapshot_time = time.monotonic() + SNAPSHOT_INTERVAL_SEC
                     latest_sync_frames.clear()  # wait for next aligned batch
@@ -313,9 +320,11 @@ with contextlib.ExitStack() as stack:
                 last_sync_report_time = time.monotonic()
         
         # Visualizer + OpenCV key handling (non-blocking)
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
-            print("Got q key. Exiting...")
-            break
+        if SHOW_LOCAL_WINDOW:
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                print("Got q key. Exiting...")
+                break
 
-    cv2.destroyAllWindows()
+    if SHOW_LOCAL_WINDOW:
+        cv2.destroyAllWindows()
