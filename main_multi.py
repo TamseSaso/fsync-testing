@@ -45,6 +45,7 @@ panel_width, panel_height = map(int, args.panel_size.split(","))
 # Derive effective FPS once args are known and keep all sync math consistent
 EFFECTIVE_FPS = int(args.fps_limit) if args.fps_limit else TARGET_FPS
 SYNC_THRESHOLD_SEC = 1.0 / (2 * EFFECTIVE_FPS)
+SNAPSHOT_INTERVAL_SEC = 5.0  # Wait time between PTP snapshots
 
  # Visualizer connection
 visualizer = dai.RemoteConnection(httpPort=8082)
@@ -215,6 +216,8 @@ with contextlib.ExitStack() as stack:
     latest_sync_frames.clear()
     print(f"=== All devices ready — starting synchronized visualization (threshold: {SYNC_THRESHOLD_SEC*1000:.2f}ms)")
     
+    next_snapshot_time = 0.0  # capture immediately, then wait SNAPSHOT_INTERVAL_SEC between snapshots
+    
     # Unified visualizer loop with synchronization monitoring
     while True:
         break_main = False
@@ -264,23 +267,27 @@ with contextlib.ExitStack() as stack:
                     )
                     imgs.append(frame)
 
-                # Match reference script banner semantics (1 ms tightness indicator)
-                delta_ms = delta * 1e3
-                sync_status = "in sync" if abs(delta) < 0.001 else "out of sync"
-                color = (0, 255, 0) if sync_status == "in sync" else (0, 0, 255)
-                cv2.putText(
-                    imgs[0],
-                    f"{sync_status} | Δ = {delta_ms:.3f} ms",
-                    (20, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    color,
-                    2,
-                    cv2.LINE_AA,
-                )
+                # Only take/display a PTP snapshot every SNAPSHOT_INTERVAL_SEC seconds
+                if time.time() >= next_snapshot_time:
+                    # Match reference script banner semantics (1 ms tightness indicator)
+                    delta_ms = delta * 1e3
+                    sync_status = "in sync" if abs(delta) < 0.001 else "out of sync"
+                    color = (0, 255, 0) if sync_status == "in sync" else (0, 0, 255)
+                    cv2.putText(
+                        imgs[0],
+                        f"{sync_status} | Δ = {delta_ms:.3f} ms",
+                        (20, 80),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7,
+                        color,
+                        2,
+                        cv2.LINE_AA,
+                    )
 
-                cv2.imshow("synced_view", cv2.hconcat(imgs))
-                latest_sync_frames.clear()  # wait for next aligned batch
+                    cv2.imshow("synced_view", cv2.hconcat(imgs))
+                    print(f"=== Captured PTP snapshot; Δ={delta_ms:.3f} ms — waiting {SNAPSHOT_INTERVAL_SEC:.1f}s before next")
+                    next_snapshot_time = time.time() + SNAPSHOT_INTERVAL_SEC
+                    latest_sync_frames.clear()  # wait for next aligned batch
             else:
                 sync_stats["out_of_sync"] += 1
                 # Do not clear when out of sync; keep latest frames until they align
