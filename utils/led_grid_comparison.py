@@ -4,6 +4,8 @@ import cv2
 import numpy as np
 import depthai as dai
 from typing import Optional, Tuple
+import time as _t
+from datetime import timedelta as _td
 
 
 class LEDGridComparison(dai.node.ThreadedHostNode):
@@ -66,6 +68,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         self.cell_h = max(1, self.output_h // self.grid_size)
         self.led_period_us = float(led_period_us)
         self.pass_ratio = float(pass_ratio)
+        self._last_placeholder_time = 0.0
+        self._seq_counter = 1
 
         # Host-side queues are provided from analyzer node outputs
         self._qA = None
@@ -124,6 +128,30 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         img.setSequenceNum(int(seq))
         img.setTimestamp(ts)
         return img
+
+    def _send_placeholder(self, text_line1: str = "Waiting for LED analyzer streams...", text_line2: Optional[str] = "Connect two devices and ensure LEDGridAnalyzer is running.") -> None:
+        # Create a neutral overlay (dark background with message)
+        overlay = np.zeros((self.output_h, self.output_w, 3), dtype=np.uint8)
+        overlay[:] = (30, 30, 30)
+        cv2.putText(overlay, text_line1, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (220, 220, 220), 2, cv2.LINE_AA)
+        if text_line2:
+            cv2.putText(overlay, text_line2, (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (180, 180, 180), 2, cv2.LINE_AA)
+
+        # Minimal report image too, so both topics are visible in the visualizer
+        report = np.zeros((240, 960, 3), dtype=np.uint8)
+        report[:] = (20, 20, 20)
+        cv2.putText(report, "LED Sync Report", (16, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 0), 2, cv2.LINE_AA)
+        cv2.putText(report, text_line1, (16, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2, cv2.LINE_AA)
+        if text_line2:
+            cv2.putText(report, text_line2, (16, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 180, 180), 2, cv2.LINE_AA)
+
+        # Use zero timestamp for placeholders and increment seq
+        ts = _td(seconds=0)
+        seq = self._seq_counter
+        self._seq_counter += 1
+
+        self.out_overlay.send(self._create_imgframe(overlay, ts, seq))
+        self.out_report.send(self._create_imgframe(report, ts, seq))
 
     # --- Visualization ----------------------------------------------------
     def _draw_overlay(self, maskA: np.ndarray, maskB: np.ndarray) -> np.ndarray:
@@ -223,6 +251,10 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         )
         if self._qA is None or self._qB is None:
             print("LEDGridComparison warning: queues not set yet. Waiting...")
+            now = _t.time()
+            if now - self._last_placeholder_time > 0.5:
+                self._send_placeholder()
+                self._last_placeholder_time = now
 
         last_seqA = -1
         last_seqB = -1
@@ -245,7 +277,10 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
 
                 # Ensure queues available
                 if self._qA is None or self._qB is None:
-                    import time as _t
+                    now = _t.time()
+                    if now - self._last_placeholder_time > 0.5:
+                        self._send_placeholder()
+                        self._last_placeholder_time = now
                     _t.sleep(0.005)
                     continue
 
@@ -273,7 +308,10 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     bufB = None
 
                 if bufA is None or bufB is None:
-                    import time as _t
+                    now = _t.time()
+                    if now - self._last_placeholder_time > 0.5:
+                        self._send_placeholder("Waiting for both LED streams...", "Make sure both analyzers are producing buffers.")
+                        self._last_placeholder_time = now
                     _t.sleep(0.001)
                     continue
 
