@@ -405,35 +405,61 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 maskA_full = self._mask_from_grid(gridA, thrA)
                 maskB_full = self._mask_from_grid(gridB, thrB)
 
-                # Estimate best column alignment by scoring IoU across shifts (robust to unsynced clocks)
-                A_eval = maskA_full[:-1, :]
-                max_shift = self.grid_size  # search full width
-                best_s = 0
-                best_iou_tmp = -1.0
-                scores = {}
-                for s in range(-max_shift, max_shift + 1):
-                    B_eval = np.roll(maskB_full[:-1, :], s, axis=1)
-                    overlap_tmp = int(np.logical_and(A_eval, B_eval).sum())
-                    union_tmp = int(np.logical_or(A_eval, B_eval).sum())
-                    iou_tmp = (overlap_tmp / union_tmp) if union_tmp > 0 else 0.0
-                    scores[s] = iou_tmp
-                    if iou_tmp > best_iou_tmp:
-                        best_iou_tmp = iou_tmp
-                        best_s = s
-                shift_cols_signed = int(best_s)
-                # Quadratic interpolation for sub-column (real) shift if neighbors exist
-                left = scores.get(shift_cols_signed - 1, None)
-                center = scores.get(shift_cols_signed, None)
-                right = scores.get(shift_cols_signed + 1, None)
-                shift_cols_real = float(shift_cols_signed)
-                if left is not None and center is not None and right is not None:
-                    denom = (left - 2 * center + right)
-                    if abs(denom) > 1e-9:
-                        shift_cols_real = shift_cols_signed + 0.5 * (left - right) / denom
-                shiftedB_full = self._roll_columns(maskB_full, int(round(shift_cols_real)))
-                # Δt from *real* offset and configured LED period (in microseconds)
-                dt_us_abs = int(abs(shift_cols_real) * self.led_period_us)
-                intervals_offset_real = abs(shift_cols_real)
+                # --- Timestamp-based timing (fallback) and degenerate detection ---
+                # Exclude bottom config row for activity check
+                _A_eval = maskA_full[:-1, :]
+                _B_eval = maskB_full[:-1, :]
+                onA_full_raw = int(_A_eval.sum())
+                onB_full_raw = int(_B_eval.sum())
+                # Absolute timestamp delta (microseconds) and equivalent intervals at configured LED period
+                ts_delta_sec = (tsA - tsB).total_seconds()
+                ts_delta_us = int(abs(ts_delta_sec) * 1e6)
+                intervals_from_ts_real = (ts_delta_us / self.led_period_us) if self.led_period_us > 0 else 0.0
+                # Signed real intervals based on which side lags by timestamp
+                signed_intervals_from_ts_real = (
+                    intervals_from_ts_real if ts_delta_sec > 0 else
+                    (-intervals_from_ts_real if ts_delta_sec < 0 else 0.0)
+                )
+                # Decide whether IoU-based shift is meaningful: require both sides have some LEDs and config match
+                use_iou_alignment = (onA_full_raw > 0 and onB_full_raw > 0 and ((speedA == speedB) and (intervalsA == intervalsB)))
+
+                if use_iou_alignment:
+                    # Estimate best column alignment by scoring IoU across shifts (robust to unsynced clocks)
+                    A_eval = _A_eval
+                    max_shift = self.grid_size  # search full width
+                    best_s = 0
+                    best_iou_tmp = -1.0
+                    scores = {}
+                    for s in range(-max_shift, max_shift + 1):
+                        B_eval = np.roll(_B_eval, s, axis=1)
+                        overlap_tmp = int(np.logical_and(A_eval, B_eval).sum())
+                        union_tmp = int(np.logical_or(A_eval, B_eval).sum())
+                        iou_tmp = (overlap_tmp / union_tmp) if union_tmp > 0 else 0.0
+                        scores[s] = iou_tmp
+                        if iou_tmp > best_iou_tmp:
+                            best_iou_tmp = iou_tmp
+                            best_s = s
+                    shift_cols_signed = int(best_s)
+                    # Quadratic interpolation for sub-column (real) shift if neighbors exist
+                    left = scores.get(shift_cols_signed - 1, None)
+                    center = scores.get(shift_cols_signed, None)
+                    right = scores.get(shift_cols_signed + 1, None)
+                    shift_cols_real = float(shift_cols_signed)
+                    if left is not None and center is not None and right is not None:
+                        denom = (left - 2 * center + right)
+                        if abs(denom) > 1e-9:
+                            shift_cols_real = shift_cols_signed + 0.5 * (left - right) / denom
+                    shiftedB_full = self._roll_columns(maskB_full, int(round(shift_cols_real)))
+                    # Δt from *real* offset and configured LED period (in microseconds)
+                    dt_us_abs = int(abs(shift_cols_real) * self.led_period_us)
+                    intervals_offset_real = abs(shift_cols_real)
+                else:
+                    # Fallback: use host timestamps to estimate real interval offset and direction
+                    shift_cols_real = signed_intervals_from_ts_real
+                    shift_cols_signed = int(round(shift_cols_real))
+                    shiftedB_full = self._roll_columns(maskB_full, shift_cols_signed)
+                    dt_us_abs = ts_delta_us
+                    intervals_offset_real = abs(shift_cols_real)
 
                 # Prepare overlay image from full masks (includes bottom row)
                 overlay_img = self._draw_overlay(maskA_full, shiftedB_full)
@@ -459,7 +485,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                         shift_cols=abs(shift_cols_signed),
                         intervals_offset=intervals_offset,
                         intervals_offset_real=intervals_offset_real,
-                        lead_text=lead_text,
+                        lead_text=lead_text + (" (from TS)" if not use_iou_alignment else ""),
                         onA=0, onB=0, overlap=0,
                         recallA=0.0, recallB=0.0, iou=0.0,
                         passed=None
