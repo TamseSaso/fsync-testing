@@ -147,11 +147,9 @@ with contextlib.ExitStack() as stack:
         socket = device.getConnectedCameras()[0]
         topics, sync_queue, analyzer_queue, _ = build_nodes_on_pipeline(pipeline, device, socket)
 
-        # Start pipeline and register it with the visualizer (no comparison or PTP helpers)
-        pipeline.start()
+        # Register pipeline and add topics BEFORE starting the pipeline
         if (ENABLE_VISUALIZER_PIPELINES or ENABLE_VISUALIZER_COMPARISON) and visualizer is not None:
             visualizer.registerPipeline(pipeline)
-        # Register all per-device topics only after pipeline registration
         if ENABLE_VISUALIZER_PIPELINES and visualizer is not None:
             suffix = f" [{device.getDeviceId()}]"
             for title, output, topic_type in topics:
@@ -189,6 +187,10 @@ with contextlib.ExitStack() as stack:
         # Expose comparison topics in the visualizer
         visualizer.addTopic("LED Overlay [comparison]", comparison_node.out_overlay, "led")
         visualizer.addTopic("LED Sync Report [comparison]", comparison_node.out_report, "video")
+
+    # Start all pipelines after all topics (including comparison) are registered
+    for p in pipelines:
+        p.start()
 
     # Minimal loop: keep queues flowing; no PTP sync-gating or OpenCV windows
     receivedFrames = [False for _ in queues]
