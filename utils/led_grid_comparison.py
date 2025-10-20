@@ -219,6 +219,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         intervals: int,
         dt_us_abs: int,
         shift_cols: int,
+        intervals_offset: int,
+        lead_text: str,
         onA: int,
         onB: int,
         overlap: int,
@@ -247,6 +249,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
 
         # Timing / shift
         put(110, f"Δt ≈ {dt_us_abs} us   |   Column shift ≈ {shift_cols}")
+        put(127, f"Intervals offset ≈ {intervals_offset}  ({lead_text})")
 
         # Metrics
         put(145, f"ON A={onA}, ON B={onB}, Overlap={overlap}")
@@ -418,6 +421,15 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 overlay_frame = self._create_imgframe(overlay_img, tsA, max(seqA, seqB))
                 self.out_overlay.send(overlay_frame)
 
+                # Compute intervals_offset and lead_text for reporting
+                intervals_offset = abs(shift_cols_signed)
+                if shift_cols_signed > 0:
+                    lead_text = "B lags A"
+                elif shift_cols_signed < 0:
+                    lead_text = "A lags B"
+                else:
+                    lead_text = "aligned"
+
                 # If config mismatched -> report SKIP and continue
                 if not cfg_ok:
                     report_img = self._draw_report(
@@ -426,6 +438,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                         intervals=max(intervalsA, intervalsB),
                         dt_us_abs=dt_us_abs,
                         shift_cols=abs(shift_cols_signed),
+                        intervals_offset=intervals_offset,
+                        lead_text=lead_text,
                         onA=0, onB=0, overlap=0,
                         recallA=0.0, recallB=0.0, iou=0.0,
                         passed=None
@@ -457,6 +471,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     intervals=intervalsA,
                     dt_us_abs=dt_us_abs,
                     shift_cols=abs(shift_cols_signed),
+                    intervals_offset=intervals_offset,
+                    lead_text=lead_text,
                     onA=onA, onB=onB, overlap=overlap,
                     recallA=recallA, recallB=recallB, iou=iou,
                     passed=passed
