@@ -12,6 +12,16 @@ from utils.led_grid_visualizer import LEDGridVisualizer
 from utils.video_annotation_composer import VideoAnnotationComposer
 from utils.led_grid_comparison import LEDGridComparison
 
+import os, locale
+os.environ.setdefault("PYTHONUTF8", "1")
+os.environ.setdefault("PYTHONIOENCODING", "UTF-8")
+for k in ("LC_ALL", "LANG", "LC_CTYPE"):
+    os.environ.setdefault(k, "C.UTF-8")  # or "en_US.UTF-8" if needed
+try:
+    locale.setlocale(locale.LC_ALL, "C.UTF-8")
+except Exception:
+    pass
+
 # --- FPS counter (latest 100 samples) ---
 class FPSCounter:
     def __init__(self):
