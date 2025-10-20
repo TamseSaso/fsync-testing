@@ -69,8 +69,13 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         self._last_tick_seq = 0
 
     # --- Public API -------------------------------------------------------
-    def build(self) -> "LEDGridComparison":
-        # Nothing to link; return self for chaining
+    def build(self, tick_source: Optional[dai.Node.Output] = None) -> "LEDGridComparison":
+        """
+        Optionally attach this host node to a pipeline by linking any stream as a lightweight 'tick'.
+        If no tick_source is provided, the node will still run but won't be bound to a specific stream.
+        """
+        if tick_source is not None:
+            tick_source.link(self._tickIn)
         return self
 
     def set_queues(self, qA, qB) -> None:
