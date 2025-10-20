@@ -43,7 +43,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         self,
         grid_size: int = 32,
         output_size: Tuple[int, int] = (1024, 1024),
-        led_period_us: float = 160.0,
+        led_period_us: float = 170.0,
         pass_ratio: float = 0.90
     ) -> None:
         super().__init__()
@@ -220,6 +220,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         dt_us_abs: int,
         shift_cols: int,
         intervals_offset: int,
+        intervals_offset_real: float,
         lead_text: str,
         onA: int,
         onB: int,
@@ -240,24 +241,30 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
 
         # Config
         cfg_text = f"Config check (Speed={speed}, Intervals=0b{intervals:016b})"
+        # Constants for report
+        num_leds_no_config = self.grid_size * (self.grid_size - 1)
+        put(55, f"LEDs considered (no config row) = {num_leds_no_config} | Period = {int(self.led_period_us)} \u00B5s", (200, 200, 200))
         if cfg_ok:
-            put(70, cfg_text + " -> MATCH", (0, 255, 0))
+            put(80, cfg_text + " -> MATCH", (0, 255, 0))
         else:
-            put(70, cfg_text + " -> MISMATCH", (0, 165, 255))
+            put(80, cfg_text + " -> MISMATCH", (0, 165, 255))
             put(100, "Skipping LED placement comparison due to config mismatch.", (0, 165, 255))
-            return img
 
         # Timing / shift
         put(110, f"Δt ≈ {dt_us_abs} us   |   Column shift ≈ {shift_cols}")
-        put(127, f"Intervals offset ≈ {intervals_offset}  ({lead_text})")
+        put(127, f"Intervals offset (int) ≈ {intervals_offset}  ({lead_text})")
+        dt_seconds = intervals_offset_real * (self.led_period_us / 1e6)
+        put(145, f"Intervals offset (real) ≈ {intervals_offset_real:.3f}   |   Δt ≈ {dt_seconds:.6f} s")
 
         # Metrics
-        put(145, f"ON A={onA}, ON B={onB}, Overlap={overlap}")
-        put(175, f"RecallA={recallA:.3f}, RecallB={recallB:.3f}, IoU={iou:.3f}")
-
-        verdict = "PASS" if passed else "FAIL"
-        color = (0, 255, 0) if passed else (0, 0, 255)
-        put(210, f"Verdict: {verdict}  (threshold {self.pass_ratio:.0%} on both recalls)", color, scale=0.9)
+        put(175, f"ON A={onA}, ON B={onB}, Overlap={overlap}")
+        put(200, f"RecallA={recallA:.3f}, RecallB={recallB:.3f}, IoU={iou:.3f}")
+        if passed is None:
+            put(230, "Verdict: N/A (config mismatch)", (0, 165, 255), scale=0.9)
+        else:
+            verdict = "PASS" if passed else "FAIL"
+            color = (0, 255, 0) if passed else (0, 0, 255)
+            put(230, f"Verdict: {verdict}  (threshold {self.pass_ratio:.0%} on both recalls)", color, scale=0.9)
 
         return img
 
@@ -403,33 +410,45 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 max_shift = self.grid_size  # search full width
                 best_s = 0
                 best_iou_tmp = -1.0
+                scores = {}
                 for s in range(-max_shift, max_shift + 1):
                     B_eval = np.roll(maskB_full[:-1, :], s, axis=1)
                     overlap_tmp = int(np.logical_and(A_eval, B_eval).sum())
                     union_tmp = int(np.logical_or(A_eval, B_eval).sum())
                     iou_tmp = (overlap_tmp / union_tmp) if union_tmp > 0 else 0.0
+                    scores[s] = iou_tmp
                     if iou_tmp > best_iou_tmp:
                         best_iou_tmp = iou_tmp
                         best_s = s
                 shift_cols_signed = int(best_s)
-                shiftedB_full = self._roll_columns(maskB_full, shift_cols_signed)
-                # Approximate Δt from columns and configured LED period
-                dt_us_abs = int(abs(shift_cols_signed) * self.led_period_us)
+                # Quadratic interpolation for sub-column (real) shift if neighbors exist
+                left = scores.get(shift_cols_signed - 1, None)
+                center = scores.get(shift_cols_signed, None)
+                right = scores.get(shift_cols_signed + 1, None)
+                shift_cols_real = float(shift_cols_signed)
+                if left is not None and center is not None and right is not None:
+                    denom = (left - 2 * center + right)
+                    if abs(denom) > 1e-9:
+                        shift_cols_real = shift_cols_signed + 0.5 * (left - right) / denom
+                shiftedB_full = self._roll_columns(maskB_full, int(round(shift_cols_real)))
+                # Δt from *real* offset and configured LED period (in microseconds)
+                dt_us_abs = int(abs(shift_cols_real) * self.led_period_us)
+                intervals_offset_real = abs(shift_cols_real)
 
                 # Prepare overlay image from full masks (includes bottom row)
                 overlay_img = self._draw_overlay(maskA_full, shiftedB_full)
                 overlay_frame = self._create_imgframe(overlay_img, tsA, max(seqA, seqB))
                 self.out_overlay.send(overlay_frame)
 
-                # Compute intervals_offset and lead_text for reporting
-                intervals_offset = abs(shift_cols_signed)
-                if shift_cols_signed > 0:
+                # Ensure lead_text uses sign of shift_cols_real
+                if shift_cols_real > 0:
                     lead_text = "B lags A"
-                elif shift_cols_signed < 0:
+                elif shift_cols_real < 0:
                     lead_text = "A lags B"
                 else:
                     lead_text = "aligned"
 
+                intervals_offset = abs(shift_cols_signed)
                 # If config mismatched -> report SKIP and continue
                 if not cfg_ok:
                     report_img = self._draw_report(
@@ -439,6 +458,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                         dt_us_abs=dt_us_abs,
                         shift_cols=abs(shift_cols_signed),
                         intervals_offset=intervals_offset,
+                        intervals_offset_real=intervals_offset_real,
                         lead_text=lead_text,
                         onA=0, onB=0, overlap=0,
                         recallA=0.0, recallB=0.0, iou=0.0,
@@ -472,6 +492,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     dt_us_abs=dt_us_abs,
                     shift_cols=abs(shift_cols_signed),
                     intervals_offset=intervals_offset,
+                    intervals_offset_real=intervals_offset_real,
                     lead_text=lead_text,
                     onA=onA, onB=onB, overlap=overlap,
                     recallA=recallA, recallB=recallB, iou=iou,
