@@ -49,7 +49,7 @@ SYNC_THRESHOLD_SEC = 1.0 / (2 * EFFECTIVE_FPS)
 SNAPSHOT_INTERVAL_SEC = SAMPLING_PERIOD_SEC
 
 # Visualizer toggles: only publish the comparison to the visualizer
-ENABLE_VISUALIZER_PIPELINES = False   # per-device/topic streams OFF
+ENABLE_VISUALIZER_PIPELINES = True   # per-device/topic streams OFF
 ENABLE_VISUALIZER_COMPARISON = True   # comparison overlay/report ONLY
 # Disable local OpenCV window (we only use the comparison visualizer topics)
 SHOW_LOCAL_WINDOW = False
