@@ -60,7 +60,7 @@ SYNC_THRESHOLD_SEC = 1.0 / (2 * EFFECTIVE_FPS)
 # Visualizer toggles: only publish the comparison to the visualizer
 ENABLE_VISUALIZER_PIPELINES = True   # per-device/topic streams OFF
 ENABLE_VISUALIZER_COMPARISON = True  # enable comparison topics
-# Disable local OpenCV window (we only use the comparison visualizer topics)
+ # Disable local OpenCV window (set to True to see a host-side, sync-gated composite for debugging)
 SHOW_LOCAL_WINDOW = False
 visualizer = None
 if ENABLE_VISUALIZER_PIPELINES or ENABLE_VISUALIZER_COMPARISON:
@@ -112,6 +112,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
 
     # Latest-only sampler using PTP-slotted timestamps; now one sample every 5 seconds
     sampling_node = FrameSamplingNode(ptp_slot_period_sec=SAMPLING_PERIOD_SEC).build(warp_node.out)
+    sample_q = sampling_node.out.createOutputQueue(2, False)
 
     # Analyze LED grid on the sampled (latest) crop
     led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.3).build(sampling_node.out)
@@ -128,15 +129,17 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
         ("Sampled Panel (PTP slots)", sampling_node.out, "panel"),
         ("LED Grid (32x32)", led_visualizer.out, "led"),
     ]
-    
+
+    # Pre-create host queues for all topics to force queueDepth=1 and non-blocking (prevents backlog drift)
+    _ = [out.createOutputQueue(1, False) for _, out, _ in topics]
+
     # Create a host queue on the base stream to ensure a HostNode link exists pre-build
     sync_queue = source_out.createOutputQueue(1, False)
-    
+
     # Return topics, sync queue, analyzer queue, and strong references to nodes to prevent premature GC
     nodes = [cam, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
 
-
-    return topics, sync_queue, analyzer_out, nodes
+    return topics, sync_queue, analyzer_out, nodes, sample_q
 
 
 with contextlib.ExitStack() as stack:
@@ -145,6 +148,7 @@ with contextlib.ExitStack() as stack:
     analyzer_queues = []
     topics_by_device = []
     liveness_refs = []  # keep strong references to nodes to prevent GC
+    sample_queues = []
 
     for deviceInfo in DEVICE_INFOS:
         pipeline = stack.enter_context(dai.Pipeline(dai.Device(deviceInfo)))
@@ -155,9 +159,10 @@ with contextlib.ExitStack() as stack:
         print("    Num of cameras:", len(device.getConnectedCameras()))
 
         socket = device.getConnectedCameras()[0]
-        topics, sync_queue, analyzer_out, nodes = build_nodes_on_pipeline(pipeline, device, socket)
+        topics, sync_queue, analyzer_out, nodes, sample_q = build_nodes_on_pipeline(pipeline, device, socket)
         # Create analyzer host queue PRE-BUILD so DepthAI sees the HostNode link
         analyzer_q = analyzer_out.createOutputQueue(1, False)
+        sample_queues.append(sample_q)
 
         # Add topics BEFORE starting the pipeline (queues must be created pre-build)
         if ENABLE_VISUALIZER_PIPELINES and visualizer is not None:
@@ -208,9 +213,34 @@ with contextlib.ExitStack() as stack:
     if comparison_node is not None and len(analyzer_queues) >= 2:
         comparison_node.set_queues(analyzer_queues[0], analyzer_queues[1])
 
+    # Buffer for latest sampled frames from each device (used for host-side sync gating / optional local view)
+    latest_samples = {}
 
     # Idle loop – Visualizer handles display; press 'q' to quit
     while True:
+        # --- Host-side synchronisation gate for sampled panel frames (optional local view) ---
+        # Collect newest sample from each device (non-blocking)
+        for idx, q in enumerate(sample_queues):
+            while q.has():
+                latest_samples[idx] = q.get()
+
+        # When we have a fresh sample from every device, check timestamp skew
+        if len(sample_queues) > 0 and len(latest_samples) == len(sample_queues):
+            ts_vals = [f.getTimestamp(dai.CameraExposureOffset.END).total_seconds() for f in latest_samples.values()]
+            if max(ts_vals) - min(ts_vals) <= SYNC_THRESHOLD_SEC:
+                # If you want a quick visual check, enable the local OpenCV window at the top via SHOW_LOCAL_WINDOW=True.
+                if SHOW_LOCAL_WINDOW:
+                    # Convert frames to BGR and stack side-by-side for a debug view
+                    frames = [latest_samples[i].getCvFrame() for i in range(len(sample_queues))]
+                    # Make heights equal for hconcat
+                    min_h = min(fr.shape[0] for fr in frames)
+                    frames = [cv2.resize(fr, (int(fr.shape[1] * (min_h / fr.shape[0])), min_h)) for fr in frames]
+                    composite = cv2.hconcat(frames)
+                    cv2.imshow("SYNC: sampled panels", composite)
+                    cv2.waitKey(1)
+                # Clear after a synchronised tick
+                latest_samples.clear()
+
         key = visualizer.waitKey(1) if visualizer is not None else -1
         if key == ord("q"):
             print("Got q key. Exiting...")
