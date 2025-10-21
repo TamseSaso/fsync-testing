@@ -121,6 +121,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
 
     # Compose video + apriltag annotations
     video_composer = VideoAnnotationComposer().build(source_out, apriltag_node.out)
+    video_q = video_composer.out.createOutputQueue(1, False)
 
     # Topics for visualizer (using Node.Output objects)
     topics = [
@@ -139,7 +140,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     # Return topics, sync queue, analyzer queue, and strong references to nodes to prevent premature GC
     nodes = [cam, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
 
-    return topics, sync_queue, analyzer_out, nodes, sample_q
+    return topics, sync_queue, analyzer_out, nodes, sample_q, video_q
 
 
 with contextlib.ExitStack() as stack:
@@ -149,6 +150,7 @@ with contextlib.ExitStack() as stack:
     topics_by_device = []
     liveness_refs = []  # keep strong references to nodes to prevent GC
     sample_queues = []
+    video_queues = []
 
     for deviceInfo in DEVICE_INFOS:
         pipeline = stack.enter_context(dai.Pipeline(dai.Device(deviceInfo)))
@@ -159,10 +161,11 @@ with contextlib.ExitStack() as stack:
         print("    Num of cameras:", len(device.getConnectedCameras()))
 
         socket = device.getConnectedCameras()[0]
-        topics, sync_queue, analyzer_out, nodes, sample_q = build_nodes_on_pipeline(pipeline, device, socket)
+        topics, sync_queue, analyzer_out, nodes, sample_q, video_q = build_nodes_on_pipeline(pipeline, device, socket)
         # Create analyzer host queue PRE-BUILD so DepthAI sees the HostNode link
         analyzer_q = analyzer_out.createOutputQueue(1, False)
         sample_queues.append(sample_q)
+        video_queues.append(video_q)
 
         # Add topics BEFORE starting the pipeline (queues must be created pre-build)
         if ENABLE_VISUALIZER_PIPELINES and visualizer is not None:
@@ -215,6 +218,7 @@ with contextlib.ExitStack() as stack:
 
     # Buffer for latest sampled frames from each device (used for host-side sync gating / optional local view)
     latest_samples = {}
+    latest_videos = {}
 
     # Idle loop – Visualizer handles display; press 'q' to quit
     while True:
@@ -240,6 +244,23 @@ with contextlib.ExitStack() as stack:
                     cv2.waitKey(1)
                 # Clear after a synchronised tick
                 latest_samples.clear()
+
+        # --- Host-side synchronisation gate for annotated video frames (optional local view) ---
+        for idx, q in enumerate(video_queues):
+            while q.has():
+                latest_videos[idx] = q.get()
+
+        if len(video_queues) > 0 and len(latest_videos) == len(video_queues):
+            ts_vals = [f.getTimestamp(dai.CameraExposureOffset.END).total_seconds() for f in latest_videos.values()]
+            if max(ts_vals) - min(ts_vals) <= SYNC_THRESHOLD_SEC:
+                if SHOW_LOCAL_WINDOW:
+                    frames = [latest_videos[i].getCvFrame() for i in range(len(video_queues))]
+                    min_h = min(fr.shape[0] for fr in frames)
+                    frames = [cv2.resize(fr, (int(fr.shape[1] * (min_h / fr.shape[0])), min_h)) for fr in frames]
+                    composite = cv2.hconcat(frames)
+                    cv2.imshow("SYNC: video with apriltags", composite)
+                    cv2.waitKey(1)
+                latest_videos.clear()
 
         key = visualizer.waitKey(1) if visualizer is not None else -1
         if key == ord("q"):
