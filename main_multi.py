@@ -89,6 +89,11 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     source_out.link(manip.inputImage)
     source_out = manip.out
 
+    # Device-side sync gate: quantize frames to PTP slots at camera FPS so all devices publish the same timestamps
+    sync_gate_node = FrameSamplingNode(ptp_slot_period_sec=1.0 / fps_limit).build(source_out)
+    # Optional host queue on gated stream (depth=1, non-blocking) to avoid backlog drift
+    sync_q = sync_gate_node.out.createOutputQueue(1, False)
+
     # AprilTag detection and annotations
     apriltag_node = AprilTagAnnotationNode(
         families=args.apriltag_families,
@@ -98,7 +103,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
         decode_sharpening=args.apriltag_sharpening,
         decision_margin=args.apriltag_decision_margin,
         persistence_seconds=args.apriltag_persistence,
-    ).build(source_out)
+    ).build(sync_gate_node.out)
 
     # Perspective-rectified panel crop
     warp_node = AprilTagWarpNode(
@@ -108,7 +113,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
         quad_decimate=args.apriltag_decimate,
         tag_size=args.apriltag_size,
         z_offset=args.z_offset,
-    ).build(source_out)
+    ).build(sync_gate_node.out)
 
     # Latest-only sampler using PTP-slotted timestamps; now one sample every 5 seconds
     sampling_node = FrameSamplingNode(ptp_slot_period_sec=SAMPLING_PERIOD_SEC).build(warp_node.out)
@@ -120,7 +125,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     led_visualizer = LEDGridVisualizer(output_size=(1024, 1024)).build(led_analyzer.out)
 
     # Compose video + apriltag annotations
-    video_composer = VideoAnnotationComposer().build(source_out, apriltag_node.out)
+    video_composer = VideoAnnotationComposer().build(sync_gate_node.out, apriltag_node.out)
     video_q = video_composer.out.createOutputQueue(1, False)
 
     # Topics for visualizer (using Node.Output objects)
@@ -135,7 +140,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     _ = [out.createOutputQueue(1, False) for _, out, _ in topics]
 
     # Create a host queue on the base stream to ensure a HostNode link exists pre-build
-    sync_queue = source_out.createOutputQueue(1, False)
+    sync_queue = sync_gate_node.out.createOutputQueue(1, False)
 
     # Return topics, sync queue, analyzer queue, and strong references to nodes to prevent premature GC
     nodes = [cam, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
