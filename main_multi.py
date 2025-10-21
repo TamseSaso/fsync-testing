@@ -64,11 +64,17 @@ SAMPLING_PERIOD_SEC = 5.0
 # Tolerance for cross-device alignment (match reference script: half-frame at current FPS)
 SYNC_THRESHOLD_SEC = 1.0 / (2 * EFFECTIVE_FPS)
 
+#
 # Visualizer toggles: only publish the comparison to the visualizer
 ENABLE_VISUALIZER_PIPELINES = True   # per-device/topic streams OFF
 ENABLE_VISUALIZER_COMPARISON = True  # enable comparison topics
- # Disable local OpenCV window (set to True to see a host-side, sync-gated composite for debugging)
+# Disable local OpenCV window (set to True to see a host-side, sync-gated composite for debugging)
 SHOW_LOCAL_WINDOW = False
+
+# Image rotation options
+ENABLE_ROTATE_180 = True          # you said you need rotation
+USE_CAMERA_ORIENTATION = True     # prefer hardware rotation over ImageManip
+
 visualizer = None
 if ENABLE_VISUALIZER_PIPELINES or ENABLE_VISUALIZER_COMPARISON:
     visualizer = dai.RemoteConnection(httpPort=8082)
@@ -94,16 +100,29 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
         dev.setLogOutputLevel(dai.LogLevel.OFF)
     if SET_MANUAL_EXPOSURE:
         cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=100)
-    source_out = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
-    manip = pipeline.create(dai.node.ImageManip)
-    manip.setMaxOutputFrameSize(8 * 1024 * 1024)
-    manip.initialConfig.addRotateDeg(180)
-    source_out.link(manip.inputImage)
-    source_out = manip.out
+    # Prefer hardware rotation if requested
+    if ENABLE_ROTATE_180 and USE_CAMERA_ORIENTATION:
+        with contextlib.suppress(Exception):
+            cam.setImageOrientation(dai.CameraImageOrientation.ROTATE_180)
+        with contextlib.suppress(Exception):
+            cam.initialControl.setImageOrientation(dai.CameraImageOrientation.ROTATE_180)
 
-    # Ensure ImageManip.out is linked to a HostNode to satisfy pipeline validation
-    # (workaround for sporadic "ImageManip.out not linked to HostNode" errors)
-    manip_host_q = manip.out.createOutputQueue(1, False)
+    source_out = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
+
+    # Optional rotate via ImageManip ONLY if we are not using camera orientation
+    if ENABLE_ROTATE_180 and not USE_CAMERA_ORIENTATION:
+        manip = pipeline.create(dai.node.ImageManip)
+        manip.setMaxOutputFrameSize(8 * 1024 * 1024)
+        manip.initialConfig.addRotateDeg(180)
+        source_out.link(manip.inputImage)
+        source_out = manip.out
+        # Ensure ImageManip.out is linked to a HostNode to satisfy pipeline validation
+        try:
+            manip_host_q = manip.out.createOutputQueue(1, False, "manip_probe")
+        except TypeError:
+            manip_host_q = manip.out.createOutputQueue(1, False)
+    else:
+        manip_host_q = None
 
     # Device-side sync gate: quantize frames to PTP slots at camera FPS so all devices publish the same timestamps
     sync_gate_node = FrameSamplingNode(ptp_slot_period_sec=1.0 / fps_limit).build(source_out)
