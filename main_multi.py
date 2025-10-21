@@ -12,13 +12,26 @@ from utils.led_grid_visualizer import LEDGridVisualizer
 from utils.video_annotation_composer import VideoAnnotationComposer
 from utils.led_grid_comparison import LEDGridComparison
 
-import os, locale
-os.environ.setdefault("PYTHONUTF8", "1")
-os.environ.setdefault("PYTHONIOENCODING", "UTF-8")
-for k in ("LC_ALL", "LANG", "LC_CTYPE"):
-    os.environ.setdefault(k, "C.UTF-8")  # or "en_US.UTF-8" if needed
+import os, locale, sys, io
+# Do NOT force UTF-8 globally; some device logs may contain arbitrary bytes.
+# Use tolerant stdio handlers to avoid crashes on non‑UTF8 bytes.
 try:
-    locale.setlocale(locale.LC_ALL, "C.UTF-8")
+    # Prefer an existing UTF-8 locale if present; otherwise keep the system default.
+    for loc in ("", "en_US.UTF-8", "C.UTF-8", "C"):
+        try:
+            if loc:
+                locale.setlocale(locale.LC_ALL, loc)
+            else:
+                locale.setlocale(locale.LC_ALL, "")
+            break
+        except Exception:
+            continue
+except Exception:
+    pass
+# Make stdout/stderr tolerant to invalid UTF-8 so logging from the device can't crash Python.
+try:
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding=sys.stdout.encoding or "utf-8", errors="replace", line_buffering=True)
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding=sys.stderr.encoding or "utf-8", errors="replace", line_buffering=True)
 except Exception:
     pass
 
