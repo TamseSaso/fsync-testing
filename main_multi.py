@@ -105,7 +105,9 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
 
     # Latest-only sampler using PTP-slotted timestamps; now one sample every 5 seconds
     sampling_node = FrameSamplingNode(ptp_slot_period_sec=SAMPLING_PERIOD_SEC).build(warp_node.out)
-    sample_q = sampling_node.out.createOutputQueue(2, False)
+    sample_q = None
+    if SHOW_LOCAL_WINDOW:
+        sample_q = sampling_node.out.createOutputQueue(2, False)
 
     # Analyze LED grid on the sampled (latest) crop
     led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.3).build(sampling_node.out)
@@ -114,7 +116,9 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
 
     # Compose video + apriltag annotations
     video_composer = VideoAnnotationComposer().build(sync_gate_node.out, apriltag_node.out)
-    video_q = video_composer.out.createOutputQueue(1, False)
+    video_q = None
+    if SHOW_LOCAL_WINDOW:
+        video_q = video_composer.out.createOutputQueue(1, False)
 
     # Topics for visualizer (using Node.Output objects)
     topics = [
@@ -123,10 +127,6 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
         ("Sampled Panel (PTP slots)", sampling_node.out, "panel"),
         ("LED Grid (32x32)", led_visualizer.out, "led"),
     ]
-
-    # Pre-create host queues only for outputs without explicit queues to avoid duplicate HostNodes
-    warp_node.out.createOutputQueue(1, False)
-    led_visualizer.out.createOutputQueue(1, False)
 
     # Create a host queue on the base stream to ensure a HostNode link exists pre-build
     sync_queue = sync_gate_node.out.createOutputQueue(1, False)
@@ -158,8 +158,10 @@ with contextlib.ExitStack() as stack:
         topics, sync_queue, analyzer_out, nodes, sample_q, video_q = build_nodes_on_pipeline(pipeline, device, socket)
         # Create analyzer host queue PRE-BUILD so DepthAI sees the HostNode link
         analyzer_q = analyzer_out.createOutputQueue(1, False)
-        sample_queues.append(sample_q)
-        video_queues.append(video_q)
+        if sample_q is not None:
+            sample_queues.append(sample_q)
+        if video_q is not None:
+            video_queues.append(video_q)
 
         # Add topics BEFORE starting the pipeline (queues must be created pre-build)
         if ENABLE_VISUALIZER_PIPELINES and visualizer is not None:
@@ -203,8 +205,13 @@ with contextlib.ExitStack() as stack:
 
     # Start all pipelines after all topics (including comparison) are registered
     for p in pipelines:
-        p.start()
-        visualizer.registerPipeline(p)
+        try:
+            p.start()
+            visualizer.registerPipeline(p)
+        except Exception as e:
+            import sys
+            sys.stderr.buffer.write(("Pipeline start failed: %r\n" % (e,)).encode("utf-8", "backslashreplace"))
+            raise
 
     # Connect pre-built analyzer queues to comparison node once pipelines are running
     if comparison_node is not None and len(analyzer_queues) >= 2:
