@@ -81,7 +81,6 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     # Device-side sync gate: quantize frames to PTP slots at camera FPS so all devices publish the same timestamps
     sync_gate_node = FrameSamplingNode(ptp_slot_period_sec=1.0 / fps_limit).build(source_out)
     # Optional host queue on gated stream (depth=1, non-blocking) to avoid backlog drift
-    sync_q = sync_gate_node.out.createOutputQueue(1, False)
 
     # AprilTag detection and annotations
     apriltag_node = AprilTagAnnotationNode(
@@ -125,8 +124,9 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
         ("LED Grid (32x32)", led_visualizer.out, "led"),
     ]
 
-    # Pre-create host queues for all topics to force queueDepth=1 and non-blocking (prevents backlog drift)
-    _ = [out.createOutputQueue(1, False) for _, out, _ in topics]
+    # Pre-create host queues only for outputs without explicit queues to avoid duplicate HostNodes
+    warp_node.out.createOutputQueue(1, False)
+    led_visualizer.out.createOutputQueue(1, False)
 
     # Create a host queue on the base stream to ensure a HostNode link exists pre-build
     sync_queue = sync_gate_node.out.createOutputQueue(1, False)
