@@ -101,6 +101,10 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     source_out.link(manip.inputImage)
     source_out = manip.out
 
+    # Ensure ImageManip.out is linked to a HostNode to satisfy pipeline validation
+    # (workaround for sporadic "ImageManip.out not linked to HostNode" errors)
+    manip_host_q = manip.out.createOutputQueue(1, False)
+
     # Device-side sync gate: quantize frames to PTP slots at camera FPS so all devices publish the same timestamps
     sync_gate_node = FrameSamplingNode(ptp_slot_period_sec=1.0 / fps_limit).build(source_out)
     # Optional host queue on gated stream (depth=1, non-blocking) to avoid backlog drift
@@ -155,7 +159,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     sync_queue = sync_gate_node.out.createOutputQueue(1, False)
 
     # Return topics, sync queue, analyzer queue, and strong references to nodes to prevent premature GC
-    nodes = [cam, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
+    nodes = [cam, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer, manip_host_q]
 
     return topics, sync_queue, analyzer_out, nodes, sample_q, video_q
 
