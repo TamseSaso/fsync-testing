@@ -3,6 +3,24 @@ import depthai as dai
 import time
 import cv2
 
+import os
+import sys
+import locale
+
+# --- Ensure UTF-8 I/O to avoid decode errors in some environments ---
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+print("ENC:", {
+    "fs": sys.getfilesystemencoding(),
+    "preferred": locale.getpreferredencoding(False)
+})
+
 from utils.arguments import initialize_argparser
 from utils.apriltag_node import AprilTagAnnotationNode
 from utils.apriltag_warp_node import AprilTagWarpNode
@@ -69,6 +87,11 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     fps_limit = EFFECTIVE_FPS
 
     cam = pipeline.create(dai.node.Camera).build(socket, sensorFps=fps_limit)
+    # Try to reduce device logs to avoid odd non-UTF8 output paths
+    with contextlib.suppress(Exception):
+        dev = pipeline.getDefaultDevice()
+        dev.setLogLevel(dai.LogLevel.OFF)
+        dev.setLogOutputLevel(dai.LogLevel.OFF)
     if SET_MANUAL_EXPOSURE:
         cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=100)
     source_out = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
@@ -203,8 +226,18 @@ with contextlib.ExitStack() as stack:
 
     # Start all pipelines after all topics (including comparison) are registered
     for p in pipelines:
-        p.start()
-        visualizer.registerPipeline(p)
+        try:
+            p.start()
+        except UnicodeDecodeError as e:
+            print("[ERROR] UnicodeDecodeError while starting pipeline. Details:")
+            print("  args:", e.args)
+            print("  preferred encoding:", locale.getpreferredencoding(False))
+            print("  fs encoding:", sys.getfilesystemencoding())
+            print("  TIP: ensure your shell has UTF-8 locale (e.g., LANG=C.UTF-8).")
+            # Re-raise so the caller sees the failure with the extra context
+            raise
+        if visualizer is not None:
+            visualizer.registerPipeline(p)
 
     # Connect pre-built analyzer queues to comparison node once pipelines are running
     if comparison_node is not None and len(analyzer_queues) >= 2:
