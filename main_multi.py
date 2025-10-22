@@ -52,7 +52,10 @@ ENABLE_VISUALIZER_COMPARISON = True  # enable comparison topics
  # Disable local OpenCV window (set to True to see a host-side, sync-gated composite for debugging)
 SHOW_LOCAL_WINDOW = False
 visualizer = None
-if ENABLE_VISUALZIER_PIPELINES or ENABLE_VISUALIZER_COMPARISON:
+# --- START FIX ---
+# Corrected typo 'ENABLE_VISUALZIER_PIPELINES' to 'ENABLE_VISUALIZER_PIPELINES'
+if ENABLE_VISUALIZER_PIPELINES or ENABLE_VISUALIZER_COMPARISON:
+# --- END FIX ---
     visualizer = dai.RemoteConnection(httpPort=8082)
 
 
@@ -292,3 +295,4 @@ with contextlib.ExitStack() as stack:
         if key == ord("q"):
             print("Got q key. Exiting...")
             break
+
