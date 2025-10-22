@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from typing import List, Tuple, Optional
 
 import cv2
@@ -220,7 +221,7 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                 persistent_color = (0.0, 1.0, 0.0, 0.5)
                 annotations.draw_rectangle((xmin, ymin), (xmax, ymax), outline_color=persistent_color)
                 annotations.draw_text(
-                    text=f"ID {persist_det['tag_id']} 📍",
+                    text=f"ID {persist_det['tag_id']} (persist)",
                     position=(min(max(0.0, xmin + 0.005), 0.98), max(0.0, ymin + 0.02)),
                     size=18,
                 )
