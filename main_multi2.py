@@ -108,11 +108,11 @@ with contextlib.ExitStack() as stack:
                 persistence_seconds=args.apriltag_persistence,
             ).build(node_out)
 
-        composer = VideoAnnotationComposer().build(apriltag_node.video_passthrough, apriltag_node.out)
+        composer = VideoAnnotationComposer().build(node_out, apriltag_node.out)
 
         # Register topic per device without any annotations (raw stream)
         suffix = f" [{device.getDeviceId()}]"
-        visualizer.addTopic("Camera" + suffix, apriltag_node.video_passthrough, "video")
+        visualizer.addTopic("Camera" + suffix, node_out, "video")
         visualizer.addTopic("Camera+AprilTags" + suffix, composer.out, "video")
         pipeline.start()
         visualizer.registerPipeline(pipeline)

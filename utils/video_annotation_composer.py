@@ -62,6 +62,15 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
         except Exception:
             return imgframe.getTimestamp()
 
+    def _end_ts_device(self, imgframe: dai.ImgFrame):
+        try:
+            return imgframe.getTimestampDevice(dai.CameraExposureOffset.END)
+        except Exception:
+            try:
+                return imgframe.getTimestampDevice()
+            except Exception:
+                return None
+
     def build(self, video_output: dai.Node.Output, annotations_output: dai.Node.Output) -> "VideoAnnotationComposer":
         video_output.link(self.video_input)
         annotations_output.link(self.annotations_input)
@@ -127,6 +136,19 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
                 output_msg.setWidth(w)
                 output_msg.setHeight(h)
                 output_msg.setTimestamp(self._end_ts(video_msg))
+
+                # Also propagate device timestamp and camera socket if supported
+                try:
+                    tsd = self._end_ts_device(video_msg)
+                    if tsd is not None:
+                        output_msg.setTimestampDevice(tsd)
+                except Exception:
+                    pass
+                try:
+                    output_msg.setCameraSocket(video_msg.getCameraSocket())
+                except Exception:
+                    pass
+
                 output_msg.setSequenceNum(video_msg.getSequenceNum())
                 output_msg.setData(bgr_frame.tobytes())
 
