@@ -18,13 +18,22 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
         # Create inputs for video and annotations
         self.video_input = self.createInput()
         self.video_input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
+        # Never block the upstream video stream; always take latest
+        self.video_input.setBlocking(False)
+        self.video_input.setQueueSize(1)
         
         self.annotations_input = self.createInput()
         self.annotations_input.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, True)])
+        # Keep a small buffer of recent annotations; do not block
+        self.annotations_input.setBlocking(False)
+        self.annotations_input.setQueueSize(4)
         
         # Create output for composited video
         self.out = self.createOutput()
         self.out.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
+        # Do not stall the composer if downstream is slow
+        self.out.setBlocking(False)
+        self.out.setQueueSize(2)
         
         # Store latest annotations
         self.latest_annotations = None

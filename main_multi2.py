@@ -67,6 +67,12 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
     manip.initialConfig.addRotateDeg(180)
     node_out.link(manip.inputImage)
     node_out = manip.out
+    # Prefer dropping to blocking to keep devices in sync
+    try:
+        node_out.setBlocking(False)
+        node_out.setQueueSize(8)
+    except Exception:
+        pass
     output = node_out.createOutputQueue()
     if SET_MANUAL_EXPOSURE:
         camRgb.initialControl.setManualExposure(6000, 100)

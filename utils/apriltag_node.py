@@ -36,9 +36,15 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
 
         self.input = self.createInput()
         self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
+        # Avoid back‑pressure on the camera stream if tag processing is slow
+        self.input.setBlocking(False)
+        self.input.setQueueSize(1)
 
         self.out = self.createOutput()
         self.out.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, True)])
+        # Do not block on output (drop if the consumer is late)
+        self.out.setBlocking(False)
+        self.out.setQueueSize(2)
 
         self.families = families
         self.max_tags = max_tags
