@@ -110,7 +110,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
 
 
     # Device-side sync gate: quantize frames to PTP slots at camera FPS so all devices publish the same timestamps
-    sync_gate_node = FrameSamplingNode(ptp_slot_period_sec=1.0 / fps_limit).build(source_out)
+    sync_gate_node = FrameSamplingNode(ptp_slot_period_sec=1.0 / fps_limit).build(manip_host_q)
     # Optional host queue on gated stream (depth=1, non-blocking) to avoid backlog drift
 
     # AprilTag detection and annotations
