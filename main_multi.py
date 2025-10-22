@@ -147,7 +147,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
 
     nodes = [cam, manip, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]    
     
-    return topics, sync_queue, analyzer_out, nodes, sample_q, video_q, manip_host_q
+    return topics, sync_queue, analyzer_out, nodes, sample_q, video_q
 
 
 with contextlib.ExitStack() as stack:
@@ -170,7 +170,7 @@ with contextlib.ExitStack() as stack:
         print("    Num of cameras:", len(device.getConnectedCameras()))
 
         socket = device.getConnectedCameras()[0]
-        topics, sync_queue, analyzer_out, nodes, sample_q, video_q, manip_host_q = build_nodes_on_pipeline(pipeline, device, socket)
+        topics, sync_queue, analyzer_out, nodes, sample_q, video_q = build_nodes_on_pipeline(pipeline, device, socket)
         # Create analyzer host queue PRE-BUILD so DepthAI sees the HostNode link
         analyzer_q = analyzer_out.createOutputQueue(1, False)
         if sample_q is not None:
@@ -179,7 +179,6 @@ with contextlib.ExitStack() as stack:
             video_queues.append(video_q)
         # Keep host-linked queues alive to maintain HostNode links
         sync_queues.append(sync_queue)
-        manip_host_queues.append(manip_host_q)
 
         # Add topics BEFORE starting the pipeline (queues must be created pre-build)
         if ENABLE_VISUALIZER_PIPELINES and visualizer is not None:
