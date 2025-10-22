@@ -1,3 +1,4 @@
+from collections import deque
 #!/usr/bin/env python3
 
 import contextlib

@@ -1,5 +1,5 @@
 from typing import List, Tuple
-
+import time
 import cv2
 import depthai as dai
 

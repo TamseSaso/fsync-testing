@@ -239,6 +239,8 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
 
             bgr = frame_msg.getCvFrame()
             if bgr is None:
+                import time as _t
+                _t.sleep(0.001)
                 continue
 
             gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
@@ -285,6 +287,9 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
                 # Validate geometry to avoid singular matrices
                 area = cv2.contourArea(src_pts.reshape(-1, 1, 2))
                 if area < 10.0:
+                    # Not enough area; send passthrough
+                    out_msg = self._create_imgframe(bgr, frame_msg)
+                    self.out.send(out_msg)
                     continue
 
                 H = cv2.getPerspectiveTransform(src_pts, dst_quad)
@@ -311,6 +316,6 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
                     continue
                 self.out.send(out_msg)
             else:
-                # If not enough tags, skip sending to keep stream stable
-                continue
-
+                # Not enough tags for a warp; send passthrough to keep stream alive/in sync
+                out_msg = self._create_imgframe(bgr, frame_msg)
+                self.out.send(out_msg)
