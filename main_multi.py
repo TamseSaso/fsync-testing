@@ -92,8 +92,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     manip.setMaxOutputFrameSize(4 * 1024 * 1024)
     manip.initialConfig.addRotateDeg(180)
     node_out.link(manip.inputImage)
-    node_out = manip.out
-    output = node_out.createOutputQueue()
+    output = manip.out
     if SET_MANUAL_EXPOSURE:
         cam.initialControl.setManualExposure(6000, 100)
 
@@ -146,7 +145,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     # Create a host queue on the base stream to ensure a HostNode link exists pre-build
     sync_queue = output.createOutputQueue(1, False)
 
-    nodes = [cam, output, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]    
+    nodes = [cam, manip, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]    
     
     return topics, sync_queue, analyzer_out, nodes, sample_q, video_q, manip_host_q
 
