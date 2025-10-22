@@ -20,6 +20,13 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
     Optionally waits to emit annotations until a specified number of unique tags are detected in the current frame.
     """
 
+    @staticmethod
+    def _end_ts(imgframe: dai.ImgFrame):
+        try:
+            return imgframe.getTimestamp(dai.CameraExposureOffset.END)
+        except Exception:
+            return imgframe.getTimestamp()
+
     def __init__(
         self, 
         families: str = "tag36h11", 
@@ -36,15 +43,39 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
 
         self.input = self.createInput()
         self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
-        # Avoid back‑pressure on the camera stream if tag processing is slow
-        self.input.setBlocking(False)
-        self.input.setQueueSize(1)
+        # Avoid back‑pressure on the camera stream if tag processing is slow (guard for older bindings)
+        try:
+            self.input.setBlocking(False)
+        except AttributeError:
+            pass
+        try:
+            self.input.setQueueSize(1)
+        except AttributeError:
+            pass
 
         self.out = self.createOutput()
         self.out.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, True)])
         # Do not block on output (drop if the consumer is late)
-        self.out.setBlocking(False)
-        self.out.setQueueSize(2)
+        try:
+            self.out.setBlocking(False)
+        except AttributeError:
+            pass
+        try:
+            self.out.setQueueSize(2)
+        except AttributeError:
+            pass
+
+        # Passthrough of the original video frame to keep a single host consumer on node_out
+        self.video_passthrough = self.createOutput()
+        self.video_passthrough.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
+        try:
+            self.video_passthrough.setBlocking(False)
+        except AttributeError:
+            pass
+        try:
+            self.video_passthrough.setQueueSize(2)
+        except AttributeError:
+            pass
 
         self.families = families
         self.max_tags = max_tags
@@ -122,6 +153,12 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                 # No new frame right now; yield a bit to avoid busy spinning
                 time.sleep(0.001)
                 continue
+
+            # Forward the original frame immediately to avoid blocking the camera path
+            try:
+                self.video_passthrough.send(frame_msg)
+            except Exception:
+                pass
 
             bgr = frame_msg.getCvFrame()
             if bgr is None:
@@ -230,7 +267,7 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                 )
 
             annotations_msg = annotations.build(
-                timestamp=frame_msg.getTimestamp(dai.CameraExposureOffset.END),
+                timestamp=self._end_ts(frame_msg),
                 sequence_num=frame_msg.getSequenceNum(),
             )
 

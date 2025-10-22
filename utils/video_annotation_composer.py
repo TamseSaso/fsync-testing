@@ -19,24 +19,48 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
         self.video_input = self.createInput()
         self.video_input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
         # Never block the upstream video stream; always take latest
-        self.video_input.setBlocking(False)
-        self.video_input.setQueueSize(1)
+        try:
+            self.video_input.setBlocking(False)
+        except AttributeError:
+            pass
+        try:
+            self.video_input.setQueueSize(1)
+        except AttributeError:
+            pass
         
         self.annotations_input = self.createInput()
         self.annotations_input.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, True)])
         # Keep a small buffer of recent annotations; do not block
-        self.annotations_input.setBlocking(False)
-        self.annotations_input.setQueueSize(4)
+        try:
+            self.annotations_input.setBlocking(False)
+        except AttributeError:
+            pass
+        try:
+            self.annotations_input.setQueueSize(4)
+        except AttributeError:
+            pass
         
         # Create output for composited video
         self.out = self.createOutput()
         self.out.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
         # Do not stall the composer if downstream is slow
-        self.out.setBlocking(False)
-        self.out.setQueueSize(2)
+        try:
+            self.out.setBlocking(False)
+        except AttributeError:
+            pass
+        try:
+            self.out.setQueueSize(2)
+        except AttributeError:
+            pass
         
         # Store latest annotations
         self.latest_annotations = None
+
+    def _end_ts(self, imgframe: dai.ImgFrame):
+        try:
+            return imgframe.getTimestamp(dai.CameraExposureOffset.END)
+        except Exception:
+            return imgframe.getTimestamp()
 
     def build(self, video_output: dai.Node.Output, annotations_output: dai.Node.Output) -> "VideoAnnotationComposer":
         video_output.link(self.video_input)
@@ -102,7 +126,7 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
                 output_msg.setType(dai.ImgFrame.Type.BGR888i)
                 output_msg.setWidth(w)
                 output_msg.setHeight(h)
-                output_msg.setTimestamp(video_msg.getTimestamp(dai.CameraExposureOffset.END))
+                output_msg.setTimestamp(self._end_ts(video_msg))
                 output_msg.setSequenceNum(video_msg.getSequenceNum())
                 output_msg.setData(bgr_frame.tobytes())
 

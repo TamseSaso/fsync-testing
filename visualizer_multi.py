@@ -68,7 +68,8 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
     manip.initialConfig.addRotateDeg(180)
     node_out.link(manip.inputImage)
     node_out = manip.out
-    output = node_out.createOutputQueue()
+    # No host output queue here; host nodes consume the stream
+    output = None
     if SET_MANUAL_EXPOSURE:
         camRgb.initialControl.setManualExposure(6000, 100)
     # Backwards-compatible return plus node output for visualizer usage
@@ -108,32 +109,8 @@ with contextlib.ExitStack() as stack:
         queues.append(out_q)
         device_ids.append(deviceInfo.getXLinkDeviceDesc().name)
 
-    # Buffer for latest frames; key = queue index
-    latest_frames = {}
-    fpsCounters = [FPSCounter() for _ in queues]
-    receivedFrames = [False for _ in queues]
+    # Visualizer drives display and sync; no host queue consumption here
     while True:
-        # -------------------------------------------------------------------
-        # Collect the newest frame from each queue (non‑blocking)
-        # -------------------------------------------------------------------
-        for idx, q in enumerate(queues):
-            while q.has():
-                latest_frames[idx] = q.get()
-                if not receivedFrames[idx]:
-                    print("=== Received frame from", device_ids[idx])
-                    receivedFrames[idx] = True
-                fpsCounters[idx].tick()
-
-        # -------------------------------------------------------------------
-        # Synchronise gate (no OpenCV visualization in this version)
-        # -------------------------------------------------------------------
-        if len(latest_frames) == len(queues):
-            ts_values = [f.getTimestamp(dai.CameraExposureOffset.END).total_seconds() for f in latest_frames.values()]
-            if max(ts_values) - min(ts_values) <= SYNC_THRESHOLD_SEC:
-                # In the OpenCV version, we would composite here.
-                # With the visualizer, raw topics are already displayed.
-                latest_frames.clear()
-
         key = visualizer.waitKey(1)
         if key == ord("q"):
             break
