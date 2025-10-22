@@ -2,6 +2,7 @@ import contextlib
 import depthai as dai
 import time
 import cv2
+import datetime
 
 from utils.arguments import initialize_argparser
 from utils.apriltag_node import AprilTagAnnotationNode
@@ -11,26 +12,40 @@ from utils.led_grid_analyzer import LEDGridAnalyzer
 from utils.led_grid_visualizer import LEDGridVisualizer
 from utils.video_annotation_composer import VideoAnnotationComposer
 from utils.led_grid_comparison import LEDGridComparison
-# --- FPS counter (latest 100 samples) ---
+
+# --- START: Helpers from visualizer_multi.py ---
 class FPSCounter:
     def __init__(self):
-        self.frame_times = []
+        self.frameTimes = []
 
     def tick(self):
         now = time.time()
-        self.frame_times.append(now)
-        self.frame_times = self.frame_times[-100:]
+        self.frameTimes.append(now)
+        self.frameTimes = self.frameTimes[-100:]
 
     def getFps(self):
-        if len(self.frame_times) <= 1:
-            return 0.0
-        return (len(self.frame_times) - 1) / (self.frame_times[-1] - self.frame_times[0])
+        if len(self.frameTimes) <= 1:
+            return 0
+        # Calculate the FPS
+        return (len(self.frameTimes) - 1) / (self.frameTimes[-1] - self.frameTimes[0])
+
+
+def format_time(td: datetime.timedelta) -> str:
+    hours, remainder_seconds = divmod(td.seconds, 3600)
+    minutes, seconds = divmod(remainder_seconds, 60)
+    milliseconds, microseconds_remainder = divmod(td.microseconds, 1000)
+    days_prefix = f"{td.days} day{'s' if td.days != 1 else ''}, " if td.days else ""
+    return (
+        f"{days_prefix}{hours:02d}:{minutes:02d}:{seconds:02d}."
+        f"{milliseconds:03d}.{microseconds_remainder:03d}"
+    )
+# --- END: Helpers from visualizer_multi.py ---
 
 # Define two devices here; put master first. Update to your IPs/IDs.
-DEVICE_INFOS = [
-    dai.DeviceInfo("10.12.211.82"),
-    dai.DeviceInfo("10.12.211.84"),
-]
+# Using configuration style from visualizer_multi.py
+DEVICE_INFOS = [dai.DeviceInfo(ip) for ip in ["10.12.211.82", "10.12.211.84"]] # The master camera needs to be first here
+assert len(DEVICE_INFOS) > 1, "At least two devices are required for this example."
+
 
 # Synchronization settings
 TARGET_FPS = 25  # Must match sensorFps in Camera
@@ -52,10 +67,7 @@ ENABLE_VISUALIZER_COMPARISON = True  # enable comparison topics
  # Disable local OpenCV window (set to True to see a host-side, sync-gated composite for debugging)
 SHOW_LOCAL_WINDOW = False
 visualizer = None
-# --- START FIX ---
-# Corrected typo 'ENABLE_VISUALZIER_PIPELINES' to 'ENABLE_VISUALIZER_PIPELINES'
 if ENABLE_VISUALIZER_PIPELINES or ENABLE_VISUALIZER_COMPARISON:
-# --- END FIX ---
     visualizer = dai.RemoteConnection(httpPort=8082)
 
 
