@@ -55,14 +55,45 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
     Output: dai.ImgFrame (BGR, interleaved)
     """
 
+    def _end_ts(self, imgframe: dai.ImgFrame):
+        try:
+            return imgframe.getTimestamp(dai.CameraExposureOffset.END)
+        except Exception:
+            return imgframe.getTimestamp()
+
+    def _end_ts_device(self, imgframe: dai.ImgFrame):
+        try:
+            return imgframe.getTimestampDevice(dai.CameraExposureOffset.END)
+        except Exception:
+            try:
+                return imgframe.getTimestampDevice()
+            except Exception:
+                return None
+
     def __init__(self, out_width: int, out_height: int, families: str = "tag36h11", quad_decimate: float = 1.0, tag_size: float = 0.1, z_offset: float = 0.01) -> None:
         super().__init__()
 
         self.input = self.createInput()
-        self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])    
+        self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
+        try:
+            self.input.setBlocking(False)
+        except AttributeError:
+            pass
+        try:
+            self.input.setQueueSize(1)
+        except AttributeError:
+            pass
 
         self.out = self.createOutput()
         self.out.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
+        try:
+            self.out.setBlocking(False)
+        except AttributeError:
+            pass
+        try:
+            self.out.setQueueSize(2)
+        except AttributeError:
+            pass
 
         self.out_w = int(out_width)
         self.out_h = int(out_height)
@@ -144,7 +175,17 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         img.setHeight(self.out_h)
         img.setData(bgr.tobytes())
         img.setSequenceNum(src.getSequenceNum())
-        img.setTimestamp(src.getTimestamp())
+        img.setTimestamp(self._end_ts(src))
+        try:
+            tsd = self._end_ts_device(src)
+            if tsd is not None:
+                img.setTimestampDevice(tsd)
+        except Exception:
+            pass
+        try:
+            img.setCameraSocket(src.getCameraSocket())
+        except Exception:
+            pass
         return img
 
     def run(self) -> None:
