@@ -98,7 +98,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
 
     # Link the *new* source_out (manip_rotate.out) to the host
     # This creates the required 'HostNode' link to satisfy the validator.
-    # We don't need to read from this queue; it just ensures the stream is valid.
+    # This is the "dummy" queue that was missing.
     manip_host_q = source_out.createOutputQueue(1, False)
 
 
@@ -155,7 +155,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     # Create a host queue on the base stream to ensure a HostNode link exists pre-build
     sync_queue = sync_gate_node.out.createOutputQueue(1, False)
 
-    nodes = [cam, manip_rotate, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
+    nodes = [cam, manip_rotate, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]    
     
     return topics, sync_queue, analyzer_out, nodes, sample_q, video_q, manip_host_q
 
