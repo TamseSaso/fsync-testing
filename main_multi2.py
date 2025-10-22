@@ -65,12 +65,20 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
     manip.setMaxOutputFrameSize(4 * 1024 * 1024)
     manip.initialConfig.addRotateDeg(180)
     node_out.link(manip.inputImage)
-    output = manip.out
-    # Removed host queue creation from ImageManip output
+    
+    # --- START FIX ---
+    # This is the raw node output for the visualizer and downstream nodes
+    raw_node_out = manip.out 
+    
+    # This creates the explicit host-side queue for the timestamp sync loop
+    sync_queue_out = raw_node_out.createOutputQueue()
+    # --- END FIX ---
+
     if SET_MANUAL_EXPOSURE:
         camRgb.initialControl.setManualExposure(6000, 100)
 
-    # AprilTag annotation node (fixed parameters — no args parser)
+    # AprilTag annotation node
+    # Build subsequent nodes from the raw_node_out
     apriltag_node = AprilTagAnnotationNode(
         families=args.apriltag_families,
         max_tags=args.apriltag_max,
@@ -79,13 +87,13 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
         decode_sharpening=args.apriltag_sharpening,
         decision_margin=args.apriltag_decision_margin,
         persistence_seconds=args.apriltag_persistence,
-    ).build(output)
+    ).build(raw_node_out) # <-- Use raw_node_out
 
-    video_composer = VideoAnnotationComposer().build(output, apriltag_node.out)
+    video_composer = VideoAnnotationComposer().build(raw_node_out, apriltag_node.out) # <-- Use raw_node_out
     composed_out = video_composer.out
 
-    # Backwards-compatible return plus node output for visualizer usage
-    return pipeline, output, composed_out
+    # Return node outputs for visualizer AND the queue for the sync loop
+    return pipeline, raw_node_out, composed_out, sync_queue_out
 
 # ---------------------------------------------------------------------------
 # Main
@@ -109,18 +117,26 @@ with contextlib.ExitStack() as stack:
         print("    Num of cameras:", len(device.getConnectedCameras()))
 
         socket = device.getConnectedCameras()[0]
-        pipeline, out_q, composed_out = createPipeline(pipeline, socket)
+        
+        # --- START FIX ---
+        # Unpack the new return values
+        pipeline, raw_node_out, composed_out, sync_queue = createPipeline(pipeline, socket)
 
-        # Register topics per device: raw and composed streams (no separate AprilTag annotations topic)
+        # Register topics per device: Give visualizer the NODE OUTPUTS
         suffix = f" [{device.getDeviceId()}]"
-        visualizer.addTopic("Camera" + suffix, out_q, "video")
+        visualizer.addTopic("Camera" + suffix, raw_node_out, "video")
         visualizer.addTopic("Camera+Tags" + suffix, composed_out, "video")
         
-        pipeline.start()
+        # FIX 1: Call registerPipeline BEFORE starting
         visualizer.registerPipeline(pipeline)
+        pipeline.start()
+        # --- END FIX ---
 
         pipelines.append(pipeline)
-        queues.append(out_q)
+        
+        # FIX 2: Append the actual QUEUE object for the sync loop
+        queues.append(sync_queue)
+        
         device_ids.append(deviceInfo.getXLinkDeviceDesc().name)
 
     # Buffer for latest frames; key = queue index
@@ -130,6 +146,7 @@ with contextlib.ExitStack() as stack:
     while True:
         # -------------------------------------------------------------------
         # Collect the newest frame from each queue (non‑blocking)
+        # (This loop will now work correctly)
         # -------------------------------------------------------------------
         for idx, q in enumerate(queues):
             while q.has():
@@ -141,6 +158,7 @@ with contextlib.ExitStack() as stack:
 
         # -------------------------------------------------------------------
         # Synchronise gate (no OpenCV visualization in this version)
+        # (This will also work correctly)
         # -------------------------------------------------------------------
         if len(latest_frames) == len(queues):
             ts_values = [f.getTimestamp(dai.CameraExposureOffset.END).total_seconds() for f in latest_frames.values()]
