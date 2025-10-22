@@ -28,7 +28,8 @@ class FPSCounter:
 
 # Define two devices here; put master first. Update to your IPs/IDs.
 DEVICE_INFOS = [
-    dai.DeviceInfo("10.12.211.82", "10.12.211.84"),
+    dai.DeviceInfo("10.12.211.82"),
+    dai.DeviceInfo("10.12.211.84"),
 ]
 
 # Synchronization settings
