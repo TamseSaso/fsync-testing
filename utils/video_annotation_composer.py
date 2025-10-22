@@ -8,7 +8,7 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
     Composites video frames with annotation overlays into a single output stream.
     
     Input 1: dai.ImgFrame (video frames)
-    Input 2: dai.ImgAnnotations (annotations from AnnotationHelper)
+    Input 2: dai.Buffer (annotations from AnnotationHelper)
     Output: dai.ImgFrame (video with annotations overlaid)
     """
 
@@ -87,14 +87,15 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
                     except Exception as e:
                         print(f"Warning: Failed to process annotations: {e}")
 
-                # Create output frame message
+                # Create output frame message as BGR888 interleaved (matches OpenCV buffer)
+                h, w = bgr_frame.shape[:2]
                 output_msg = dai.ImgFrame()
-                output_msg.setData(bgr_frame.flatten())
-                output_msg.setType(video_msg.getType())
-                output_msg.setWidth(bgr_frame.shape[1])
-                output_msg.setHeight(bgr_frame.shape[0])
+                output_msg.setType(dai.ImgFrame.Type.BGR888i)
+                output_msg.setWidth(w)
+                output_msg.setHeight(h)
                 output_msg.setTimestamp(video_msg.getTimestamp())
                 output_msg.setSequenceNum(video_msg.getSequenceNum())
+                output_msg.setData(bgr_frame.tobytes())
 
                 self.out.send(output_msg)
 
@@ -102,8 +103,8 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
                 print(f"Error in VideoAnnotationComposer: {e}")
                 continue
 
-    def _draw_annotations_on_frame(self, frame: np.ndarray, annotations_msg: dai.ImgAnnotations) -> np.ndarray:
-        """Draw dai.ImgAnnotations onto a frame using OpenCV."""
+    def _draw_annotations_on_frame(self, frame: np.ndarray, annotations_msg: dai.Buffer) -> np.ndarray:
+        """Draw dai.Buffer (annotations from AnnotationHelper) onto a frame using OpenCV."""
         h, w = frame.shape[:2]
         
         try:
