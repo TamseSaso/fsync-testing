@@ -61,7 +61,7 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
     manip.initialConfig.addRotateDeg(180)
     node_out.link(manip.inputImage)
     node_out = manip.out
-    output = node_out.createOutputQueue()
+    # Removed host queue creation from ImageManip output
     if SET_MANUAL_EXPOSURE:
         camRgb.initialControl.setManualExposure(6000, 100)
 
@@ -77,6 +77,8 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
     ).build(node_out)
 
     apriltag_out = apriltag_node.out
+    # Host subscribes to the AprilTag-annotated stream
+    output = apriltag_out.createOutputQueue()
 
     # Backwards-compatible return plus node output for visualizer usage
     return pipeline, output, node_out, apriltag_out
@@ -108,7 +110,7 @@ with contextlib.ExitStack() as stack:
         # Register topics per device: raw and AprilTag-annotated streams
         suffix = f" [{device.getDeviceId()}]"
         visualizer.addTopic("Camera" + suffix, node_out, "video")
-        visualizer.addTopic("AprilTags" + suffix, apriltag_out, "video")
+        visualizer.addTopic("AprilTags" + suffix, apriltag_out, "annotations")
         
         pipeline.start()
         visualizer.registerPipeline(pipeline)
