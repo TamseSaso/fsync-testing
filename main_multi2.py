@@ -71,10 +71,8 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
         decode_sharpening=0.25,
         decision_margin=50.0,
         persistence_seconds=0.2,
-    ).build()
+    ).build(node_out)
 
-    # Link the manipulated image into the AprilTag node and expose its output
-    node_out.link(apriltag_node.inputImage)
     apriltag_out = apriltag_node.out
 
     output = node_out.createOutputQueue()
