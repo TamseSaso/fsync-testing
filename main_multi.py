@@ -79,12 +79,9 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     source_out.link(manip.inputImage)
     source_out = manip.out
 
-    # --- FIX START ---
-    # The previous manip_host_q creation here was likely causing the pipeline start error
-    # because it created an output queue that was never read from, or created an
-    # unexpected HostNode link. The link to Host is ensured by sync_queue on sync_gate_node.
+    # The previous manip_host_q creation here was removed to fix a previous Pipeline start error.
+    # The link to Host is ensured by sync_queue on sync_gate_node.
     manip_host_q = None
-    # --- FIX END ---
 
     # Device-side sync gate: quantize frames to PTP slots at camera FPS so all devices publish the same timestamps
     sync_gate_node = FrameSamplingNode(ptp_slot_period_sec=1.0 / fps_limit).build(source_out)
@@ -157,9 +154,10 @@ with contextlib.ExitStack() as stack:
     manip_host_queues = []
 
     for deviceInfo in DEVICE_INFOS:
-        # We need to create the device object before creating the pipeline
-        device = dai.Device(deviceInfo)
-        pipeline = stack.enter_context(dai.Pipeline(device))
+        # Create the device object and enter it into the context
+        device = stack.enter_context(dai.Device(deviceInfo))
+        # Create the pipeline object (no context manager needed for pipeline itself)
+        pipeline = dai.Pipeline()
 
         print("=== Connected to", deviceInfo.getDeviceId())
         print("    Device ID:", device.getDeviceId())
@@ -178,11 +176,9 @@ with contextlib.ExitStack() as stack:
         # Keep host-linked queues alive to maintain HostNode links
         sync_queues.append(sync_queue)
         
-        # --- FIX START ---
         # Only append manip_host_q if it's not None
         if manip_host_q is not None:
             manip_host_queues.append(manip_host_q)
-        # --- FIX END ---
 
         # Add topics BEFORE starting the pipeline (queues must be created pre-build)
         if ENABLE_VISUALIZER_PIPELINES and visualizer is not None:
@@ -196,9 +192,9 @@ with contextlib.ExitStack() as stack:
         topics_by_device.append(topics)
         liveness_refs.append(nodes)
         
-        # Register the pipeline with the visualizer now that it has a device context
-        if visualizer is not None:
-            visualizer.registerPipeline(pipeline)
+        # NOTE: Do NOT call visualizer.registerPipeline(pipeline) here.
+        # It must be called after pipeline.start()
+        
 
     # Create LED grid comparison once we have at least two analyzer queues
     comparison_node = None
@@ -231,14 +227,13 @@ with contextlib.ExitStack() as stack:
     # Start all pipelines after all topics (including comparison) are registered
     for p in pipelines:
         try:
-            # The dai.Device object must be passed to the Pipeline constructor or
-            # the pipeline must be retrieved from the device context for 'p.start()' to work.
-            # In the loop above, we fixed: pipeline = stack.enter_context(dai.Pipeline(dai.Device(deviceInfo)))
-            # to: device = dai.Device(deviceInfo); pipeline = stack.enter_context(dai.Pipeline(device))
+            # p.start() implicitly calls pipeline.build()
             p.start()
+            # Register the now-built pipeline with the visualizer
+            if visualizer is not None:
+                visualizer.registerPipeline(p)
         except Exception as e:
             import sys
-            # Retain the original error printing but the fix should prevent the UnicodeDecodeError
             sys.stderr.buffer.write(("Pipeline start failed: %r\n" % (e,)).encode("utf-8", "backslashreplace"))
             raise
 
