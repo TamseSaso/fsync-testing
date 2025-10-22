@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
 
+# Ensure any strings we pass into pipeline/visualizer are ASCII-only
+
+def _ascii_safe(s: str) -> str:
+    try:
+        return s.encode('ascii', 'ignore').decode('ascii')
+    except Exception:
+        return ''.join(ch for ch in s if ord(ch) < 128)
+
 import contextlib
 import datetime
 import time
@@ -107,9 +115,9 @@ with contextlib.ExitStack() as stack:
         pipeline, out_q, node_out, apriltag_out = createPipeline(pipeline, socket)
 
         # Register topics per device: raw and AprilTag-annotated streams
-        suffix = f" [{device.getDeviceId()}]"
-        visualizer.addTopic("Camera" + suffix, node_out, "video")
-        visualizer.addTopic("AprilTags" + suffix, apriltag_out, "annotations")
+        suffix = _ascii_safe(f" [{device.getDeviceId()}]")
+        visualizer.addTopic(_ascii_safe("Camera" + suffix), node_out, "video")
+        visualizer.addTopic(_ascii_safe("AprilTags" + suffix), apriltag_out, "annotations")
         
         pipeline.start()
         visualizer.registerPipeline(pipeline)
