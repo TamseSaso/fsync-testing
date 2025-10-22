@@ -74,7 +74,7 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
         decode_sharpening=0.25,
         decision_margin=50.0,
         persistence_seconds=0.2,
-    ).build(output)
+    ).build(node_out)
 
     apriltag_out = apriltag_node.out
 
