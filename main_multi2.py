@@ -128,8 +128,8 @@ with contextlib.ExitStack() as stack:
         visualizer.addTopic("Camera+Tags" + suffix, composed_out, "video")
         
         # FIX 1: Call registerPipeline BEFORE starting
-        visualizer.registerPipeline(pipeline)
         pipeline.start()
+        visualizer.registerPipeline(pipeline)
         # --- END FIX ---
 
         pipelines.append(pipeline)
