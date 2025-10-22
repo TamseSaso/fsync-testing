@@ -55,45 +55,14 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
     Output: dai.ImgFrame (BGR, interleaved)
     """
 
-    def _end_ts(self, imgframe: dai.ImgFrame):
-        try:
-            return imgframe.getTimestamp(dai.CameraExposureOffset.END)
-        except Exception:
-            return imgframe.getTimestamp()
-
-    def _end_ts_device(self, imgframe: dai.ImgFrame):
-        try:
-            return imgframe.getTimestampDevice(dai.CameraExposureOffset.END)
-        except Exception:
-            try:
-                return imgframe.getTimestampDevice()
-            except Exception:
-                return None
-
     def __init__(self, out_width: int, out_height: int, families: str = "tag36h11", quad_decimate: float = 1.0, tag_size: float = 0.1, z_offset: float = 0.01) -> None:
         super().__init__()
 
         self.input = self.createInput()
-        self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
-        try:
-            self.input.setBlocking(False)
-        except AttributeError:
-            pass
-        try:
-            self.input.setQueueSize(1)
-        except AttributeError:
-            pass
+        self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])    
 
         self.out = self.createOutput()
         self.out.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
-        try:
-            self.out.setBlocking(False)
-        except AttributeError:
-            pass
-        try:
-            self.out.setQueueSize(2)
-        except AttributeError:
-            pass
 
         self.out_w = int(out_width)
         self.out_h = int(out_height)
@@ -107,9 +76,6 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         self.bottom_right_y_offset = 0.016  # Fraction of height; negative lifts only the bottom-right corner up
         self.bottom_y_offset = 0.01  # Fraction of height; negative lifts the entire bottom edge up slightly
         self._detector = None
-        
-        # Holds a frame that arrived while processing, to start from next time
-        self._pending_latest = None
         
         # Default camera parameters for 1920x1080 resolution (approximate values)
         # These should ideally be calibrated for the specific camera
@@ -178,17 +144,7 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         img.setHeight(self.out_h)
         img.setData(bgr.tobytes())
         img.setSequenceNum(src.getSequenceNum())
-        img.setTimestamp(self._end_ts(src))
-        try:
-            tsd = self._end_ts_device(src)
-            if tsd is not None:
-                img.setTimestampDevice(tsd)
-        except Exception:
-            pass
-        try:
-            img.setCameraSocket(src.getCameraSocket())
-        except Exception:
-            pass
+        img.setTimestamp(src.getTimestamp())
         return img
 
     def run(self) -> None:
@@ -213,10 +169,8 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         )
 
         while self.isRunning():
-            # If a newer frame arrived during previous processing, start from it
-            frame_msg: dai.ImgFrame | None = self._pending_latest
-            self._pending_latest = None
             # Drain to latest frame (non-blocking)
+            frame_msg: dai.ImgFrame | None = None
             try:
                 while True:
                     try:
@@ -239,8 +193,6 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
 
             bgr = frame_msg.getCvFrame()
             if bgr is None:
-                import time as _t
-                _t.sleep(0.001)
                 continue
 
             gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
@@ -287,35 +239,13 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
                 # Validate geometry to avoid singular matrices
                 area = cv2.contourArea(src_pts.reshape(-1, 1, 2))
                 if area < 10.0:
-                    # Not enough area; send passthrough
-                    out_msg = self._create_imgframe(bgr, frame_msg)
-                    self.out.send(out_msg)
                     continue
 
                 H = cv2.getPerspectiveTransform(src_pts, dst_quad)
                 warped = cv2.warpPerspective(bgr, H, (self.out_w, self.out_h))
                 out_msg = self._create_imgframe(warped, frame_msg)
-                # Drop-late: if newer frames arrived while processing, keep the newest for next loop and skip sending now-stale result
-                newer_arrived = False
-                try:
-                    while True:
-                        try:
-                            n = self.input.tryGet()
-                        except AttributeError:
-                            if not self.input.has():
-                                break
-                            n = self.input.get()
-                        if n is None:
-                            break
-                        self._pending_latest = n
-                        newer_arrived = True
-                except Exception:
-                    pass
-
-                if newer_arrived:
-                    continue
                 self.out.send(out_msg)
             else:
-                # Not enough tags for a warp; send passthrough to keep stream alive/in sync
-                out_msg = self._create_imgframe(bgr, frame_msg)
-                self.out.send(out_msg)
+                # If not enough tags, skip sending to keep stream stable
+                continue
+
