@@ -109,7 +109,7 @@ with contextlib.ExitStack() as stack:
         # Register topics per device: raw and AprilTag-annotated streams
         suffix = f" [{device.getDeviceId()}]"
         visualizer.addTopic("Camera" + suffix, node_out, "video")
-        visualizer.addTopic("AprilTags" + suffix, apriltag_out, "video")
+        visualizer.addTopic("AprilTags" + suffix, apriltag_out, "annotations")
         
         pipeline.start()
         visualizer.registerPipeline(pipeline)
