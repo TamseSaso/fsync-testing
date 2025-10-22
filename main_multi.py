@@ -84,26 +84,21 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     fps_limit = EFFECTIVE_FPS
 
     cam = pipeline.create(dai.node.Camera).build(socket, sensorFps=fps_limit)
+
+    node_out = cam.requestOutput(
+        (1920, 1080), dai.ImgFrame.Type.NV12, dai.ImgResizeMode.STRETCH
+    )
+    manip = pipeline.create(dai.node.ImageManip)
+    manip.setMaxOutputFrameSize(4 * 1024 * 1024)
+    manip.initialConfig.addRotateDeg(180)
+    node_out.link(manip.inputImage)
+    node_out = manip.out
+    output = node_out.createOutputQueue()
     if SET_MANUAL_EXPOSURE:
-        cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=100)
-    source_out = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
-
-    manip_rotate = pipeline.create(dai.node.ImageManip)
-    manip_rotate.setMaxOutputFrameSize(8 * 1024 * 1024)
-    manip_rotate.initialConfig.addRotateDeg(180)
-    source_out.link(manip_rotate.inputImage) # Link camera to rotation node
-
-    # Use the rotated output as the new source for the rest of the pipeline
-    source_out = manip_rotate.out
-
-    # Link the *new* source_out (manip_rotate.out) to the host
-    # This creates the required 'HostNode' link to satisfy the validator.
-    # This is the "dummy" queue that was missing.
-    manip_host_q = source_out.createOutputQueue(1, False)
-
+        cam.initialControl.setManualExposure(6000, 100)
 
     # Device-side sync gate: quantize frames to PTP slots at camera FPS so all devices publish the same timestamps
-    sync_gate_node = FrameSamplingNode(ptp_slot_period_sec=1.0 / fps_limit).build(source_out)
+    sync_gate_node = FrameSamplingNode(ptp_slot_period_sec=1.0 / fps_limit).build(output)
     # Optional host queue on gated stream (depth=1, non-blocking) to avoid backlog drift
 
     # AprilTag detection and annotations
@@ -155,7 +150,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     # Create a host queue on the base stream to ensure a HostNode link exists pre-build
     sync_queue = sync_gate_node.out.createOutputQueue(1, False)
 
-    nodes = [cam, manip_rotate, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]    
+    nodes = [cam, output, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]    
     
     return topics, sync_queue, analyzer_out, nodes, sample_q, video_q, manip_host_q
 
