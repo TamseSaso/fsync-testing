@@ -83,7 +83,7 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
 
     video_composer = VideoAnnotationComposer().build(output, apriltag_node.out)
     composed_out = video_composer.out
-    apriltag_out = composed_out.createOutputQueue()
+    apriltag_out = composed_out.createOutputQueue(1, False)
 
     # Backwards-compatible return plus node output for visualizer usage
     return pipeline, output, apriltag_out
@@ -115,7 +115,7 @@ with contextlib.ExitStack() as stack:
         # Register topics per device: raw and composed streams (no separate AprilTag annotations topic)
         suffix = f" [{device.getDeviceId()}]"
         visualizer.addTopic("Camera" + suffix, out_q, "video")
-        visualizer.addTopic("Camera+Tags" + suffix, apriltag_out, "video")
+        visualizer.addTopic("Camera+Tags" + suffix, apriltag_out, "annotations")
         
         pipeline.start()
         visualizer.registerPipeline(pipeline)
