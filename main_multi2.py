@@ -112,7 +112,7 @@ with contextlib.ExitStack() as stack:
         pipeline = stack.enter_context(dai.Pipeline(dai.Device(deviceInfo)))
         device = pipeline.getDefaultDevice()
 
-        print("=== Connected to", deviceInfo.getDeviceId())
+        print("=== Connected to ", deviceInfo.getDeviceId())
         print("    Device ID:", device.getDeviceId())
         print("    Num of cameras:", len(device.getConnectedCameras()))
 
