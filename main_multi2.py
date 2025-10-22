@@ -1,18 +1,12 @@
 #!/usr/bin/env python3
 
-"""
-Minimal changes to original script:
-  * Adds simple timestamp-based synchronisation across multiple devices.
-  * Presents frames side‑by‑side when they are within 1 / FPS seconds.
-  * Keeps v3 API usage and overall code structure intact.
-  * Visualization is handled by the DepthAI visualizer (no annotations).
-"""
-
 import contextlib
 import datetime
 import time
 import cv2
 import depthai as dai
+from utils.arguments import initialize_argparser
+from utils.apriltag_node import AprilTagAnnotationNode
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -20,8 +14,12 @@ TARGET_FPS = 25  # Must match sensorFps in createPipeline()
 SYNC_THRESHOLD_SEC = 1.0 / (2 * TARGET_FPS)  # Max drift to accept as "in sync"
 SET_MANUAL_EXPOSURE = True  # Set to True to use manual exposure settings
 # DEVICE_INFOS: list[dai.DeviceInfo] = ["IP_MASTER", "IP_SLAVE_1"] # Insert the device IPs here, e.g.:
+# DEVICE_INFOS: list[dai.DeviceInfo] = ["IP_MASTER", "IP_SLAVE_1"] # Insert the device IPs here, e.g.:
 DEVICE_INFOS = [dai.DeviceInfo(ip) for ip in ["10.12.211.82", "10.12.211.84"]] # The master camera needs to be first here
 assert len(DEVICE_INFOS) > 1, "At least two devices are required for this example."
+# Parse CLI arguments
+_, args = initialize_argparser()
+panel_width, panel_height = map(int, args.panel_size.split(","))
 # ---------------------------------------------------------------------------
 # Helpers (identical to multi_devices.py)
 # ---------------------------------------------------------------------------
@@ -98,9 +96,20 @@ with contextlib.ExitStack() as stack:
         socket = device.getConnectedCameras()[0]
         pipeline, out_q, node_out = createPipeline(pipeline, socket)
 
+        apriltag_node = AprilTagAnnotationNode(
+                families=args.apriltag_families,
+                max_tags=args.apriltag_max,
+                quad_decimate=args.apriltag_decimate,
+                quad_sigma=args.apriltag_sigma,
+                decode_sharpening=args.apriltag_sharpening,
+                decision_margin=args.apriltag_decision_margin,
+                persistence_seconds=args.apriltag_persistence,
+            ).build(node_out)
+
         # Register topic per device without any annotations (raw stream)
         suffix = f" [{device.getDeviceId()}]"
         visualizer.addTopic("Camera" + suffix, node_out, "video")
+        visualizer.addTopic("AprilTags" + suffix, apriltag_node.out, "annotations")
         pipeline.start()
         visualizer.registerPipeline(pipeline)
 
