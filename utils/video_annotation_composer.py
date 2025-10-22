@@ -1,7 +1,6 @@
 import cv2
 import numpy as np
 import depthai as dai
-from collections import deque
 
 
 class VideoAnnotationComposer(dai.node.ThreadedHostNode):
@@ -54,8 +53,8 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
         except AttributeError:
             pass
         
-        # Buffer recent annotations to align by sequence/timestamp
-        self.annotations_buf = deque(maxlen=32)
+        # Store latest annotations
+        self.latest_annotations = None
 
     def _end_ts(self, imgframe: dai.ImgFrame):
         try:
@@ -71,40 +70,6 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
                 return imgframe.getTimestampDevice()
             except Exception:
                 return None
-
-    def _pick_annotations_for(self, video_msg: dai.ImgFrame):
-        # Prefer exact sequence number match first
-        vseq = None
-        try:
-            vseq = video_msg.getSequenceNum()
-        except Exception:
-            pass
-        if vseq is not None:
-            for ann in reversed(self.annotations_buf):  # newest first
-                if ann.get("seq") == vseq:
-                    return ann.get("msg")
-        # Fallback: nearest timestamp within one frame interval
-        vts = None
-        try:
-            vts = self._end_ts(video_msg).total_seconds()
-        except Exception:
-            pass
-        if vts is not None and len(self.annotations_buf) > 0:
-            # TARGET_FPS might not be visible here; use 40ms window (~25 FPS) as a safe default
-            max_delta = 0.050  # 50 ms tolerance
-            best = None
-            best_dt = 1e9
-            for ann in self.annotations_buf:
-                ats = ann.get("ts")
-                if ats is None:
-                    continue
-                dt = abs(ats - vts)
-                if dt < best_dt and dt <= max_delta:
-                    best_dt = dt
-                    best = ann.get("msg")
-            if best is not None:
-                return best
-        return None
 
     def build(self, video_output: dai.Node.Output, annotations_output: dai.Node.Output) -> "VideoAnnotationComposer":
         video_output.link(self.video_input)
@@ -127,15 +92,7 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
                             ann = self.annotations_input.get()
                         if ann is None:
                             break
-                        try:
-                            ats = ann.getTimestamp().total_seconds()
-                        except Exception:
-                            ats = None
-                        try:
-                            aseq = ann.getSequenceNum()
-                        except Exception:
-                            aseq = None
-                        self.annotations_buf.append({"msg": ann, "seq": aseq, "ts": ats})
+                        self.latest_annotations = ann
                 except Exception:
                     pass
 
@@ -166,10 +123,9 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
                     continue
 
                 # Apply annotations if available
-                ann_msg = self._pick_annotations_for(video_msg)
-                if ann_msg is not None:
+                if self.latest_annotations is not None:
                     try:
-                        bgr_frame = self._draw_annotations_on_frame(bgr_frame, ann_msg)
+                        bgr_frame = self._draw_annotations_on_frame(bgr_frame, self.latest_annotations)
                     except Exception as e:
                         print(f"Warning: Failed to process annotations: {e}")
 
