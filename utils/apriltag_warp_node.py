@@ -108,6 +108,9 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         self.bottom_y_offset = 0.01  # Fraction of height; negative lifts the entire bottom edge up slightly
         self._detector = None
         
+        # Holds a frame that arrived while processing, to start from next time
+        self._pending_latest = None
+        
         # Default camera parameters for 1920x1080 resolution (approximate values)
         # These should ideally be calibrated for the specific camera
         self.camera_matrix = np.array([
@@ -210,8 +213,10 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         )
 
         while self.isRunning():
+            # If a newer frame arrived during previous processing, start from it
+            frame_msg: dai.ImgFrame | None = self._pending_latest
+            self._pending_latest = None
             # Drain to latest frame (non-blocking)
-            frame_msg: dai.ImgFrame | None = None
             try:
                 while True:
                     try:
@@ -285,6 +290,25 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
                 H = cv2.getPerspectiveTransform(src_pts, dst_quad)
                 warped = cv2.warpPerspective(bgr, H, (self.out_w, self.out_h))
                 out_msg = self._create_imgframe(warped, frame_msg)
+                # Drop-late: if newer frames arrived while processing, keep the newest for next loop and skip sending now-stale result
+                newer_arrived = False
+                try:
+                    while True:
+                        try:
+                            n = self.input.tryGet()
+                        except AttributeError:
+                            if not self.input.has():
+                                break
+                            n = self.input.get()
+                        if n is None:
+                            break
+                        self._pending_latest = n
+                        newer_arrived = True
+                except Exception:
+                    pass
+
+                if newer_arrived:
+                    continue
                 self.out.send(out_msg)
             else:
                 # If not enough tags, skip sending to keep stream stable
