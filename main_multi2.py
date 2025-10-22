@@ -7,6 +7,7 @@ import cv2
 import depthai as dai
 from utils.arguments import initialize_argparser
 from utils.apriltag_node import AprilTagAnnotationNode
+from utils.video_annotation_composer import VideoAnnotationComposer
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -106,10 +107,11 @@ with contextlib.ExitStack() as stack:
                 persistence_seconds=args.apriltag_persistence,
             ).build(node_out)
 
+        composer = VideoAnnotationComposer().build(node_out, apriltag_node.out)
+
         # Register topic per device without any annotations (raw stream)
         suffix = f" [{device.getDeviceId()}]"
-        visualizer.addTopic("Camera" + suffix, node_out, "video")
-        visualizer.addTopic("AprilTags" + suffix, apriltag_node.out, "annotations")
+        visualizer.addTopic("Camera+AprilTags" + suffix, composer.out, "video")
         pipeline.start()
         visualizer.registerPipeline(pipeline)
 
