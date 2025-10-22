@@ -6,6 +6,7 @@ import time
 import cv2
 import depthai as dai
 from utils.apriltag_node import AprilTagAnnotationNode
+from utils.video_annotation_composer import VideoAnnotationComposer
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -75,13 +76,14 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
         decision_margin=50.0,
         persistence_seconds=0.2,
     ).build(node_out)
-
     apriltag_out = apriltag_node.out
-    # Host subscribes to the AprilTag-annotated stream
-    output = apriltag_out.createOutputQueue()
+
+    video_composer = VideoAnnotationComposer().build(node_out, apriltag_out)
+    composed_out = video_composer.out
+    output = composed_out.createOutputQueue()
 
     # Backwards-compatible return plus node output for visualizer usage
-    return pipeline, output, node_out, apriltag_out
+    return pipeline, output, node_out, composed_out
 
 # ---------------------------------------------------------------------------
 # Main
@@ -105,12 +107,12 @@ with contextlib.ExitStack() as stack:
         print("    Num of cameras:", len(device.getConnectedCameras()))
 
         socket = device.getConnectedCameras()[0]
-        pipeline, out_q, node_out, apriltag_out = createPipeline(pipeline, socket)
+        pipeline, out_q, node_out, composed_out = createPipeline(pipeline, socket)
 
-        # Register topics per device: raw and AprilTag-annotated streams
+        # Register topics per device: raw and composed streams (no separate AprilTag annotations topic)
         suffix = f" [{device.getDeviceId()}]"
         visualizer.addTopic("Camera" + suffix, node_out, "video")
-        visualizer.addTopic("AprilTags" + suffix, apriltag_out, "annotations")
+        visualizer.addTopic("Camera+Tags" + suffix, composed_out, "video")
         
         pipeline.start()
         visualizer.registerPipeline(pipeline)
