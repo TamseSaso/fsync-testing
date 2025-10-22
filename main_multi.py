@@ -97,10 +97,6 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     if SET_MANUAL_EXPOSURE:
         cam.initialControl.setManualExposure(6000, 100)
 
-    # Device-side sync gate: quantize frames to PTP slots at camera FPS so all devices publish the same timestamps
-    sync_gate_node = FrameSamplingNode(ptp_slot_period_sec=1.0 / fps_limit).build(output)
-    # Optional host queue on gated stream (depth=1, non-blocking) to avoid backlog drift
-
     # AprilTag detection and annotations
     apriltag_node = AprilTagAnnotationNode(
         families=args.apriltag_families,
@@ -110,7 +106,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
         decode_sharpening=args.apriltag_sharpening,
         decision_margin=args.apriltag_decision_margin,
         persistence_seconds=args.apriltag_persistence,
-    ).build(sync_gate_node.out)
+    ).build(output)
 
     # Perspective-rectified panel crop
     warp_node = AprilTagWarpNode(
@@ -120,7 +116,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
         quad_decimate=args.apriltag_decimate,
         tag_size=args.apriltag_size,
         z_offset=args.z_offset,
-    ).build(sync_gate_node.out)
+    ).build(output)
 
     # Latest-only sampler using PTP-slotted timestamps; now one sample every 5 seconds
     sampling_node = FrameSamplingNode(ptp_slot_period_sec=SAMPLING_PERIOD_SEC).build(warp_node.out)
@@ -134,7 +130,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     led_visualizer = LEDGridVisualizer(output_size=(1024, 1024)).build(led_analyzer.out)
 
     # Compose video + apriltag annotations
-    video_composer = VideoAnnotationComposer().build(sync_gate_node.out, apriltag_node.out)
+    video_composer = VideoAnnotationComposer().build(output, apriltag_node.out)
     video_q = None
     if SHOW_LOCAL_WINDOW:
         video_q = video_composer.out.createOutputQueue(1, False)
@@ -148,7 +144,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     ]
 
     # Create a host queue on the base stream to ensure a HostNode link exists pre-build
-    sync_queue = sync_gate_node.out.createOutputQueue(1, False)
+    sync_queue = output.createOutputQueue(1, False)
 
     nodes = [cam, output, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]    
     
