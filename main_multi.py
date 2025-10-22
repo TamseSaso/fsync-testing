@@ -11,7 +11,6 @@ from utils.led_grid_analyzer import LEDGridAnalyzer
 from utils.led_grid_visualizer import LEDGridVisualizer
 from utils.video_annotation_composer import VideoAnnotationComposer
 from utils.led_grid_comparison import LEDGridComparison
-
 # --- FPS counter (latest 100 samples) ---
 class FPSCounter:
     def __init__(self):
@@ -79,9 +78,8 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     source_out.link(manip.inputImage)
     source_out = manip.out
 
-    # The previous manip_host_q creation here was removed to fix a previous Pipeline start error.
-    # The link to Host is ensured by sync_queue on sync_gate_node.
-    manip_host_q = None
+    # Ensure ImageManip.out has a HostNode link pre-build (required by new builder)
+    manip_host_q = manip.out.createOutputQueue(1, False)
 
     # Device-side sync gate: quantize frames to PTP slots at camera FPS so all devices publish the same timestamps
     sync_gate_node = FrameSamplingNode(ptp_slot_period_sec=1.0 / fps_limit).build(source_out)
@@ -154,53 +152,36 @@ with contextlib.ExitStack() as stack:
     manip_host_queues = []
 
     for deviceInfo in DEVICE_INFOS:
-        try:
-            # Create the device object and enter it into the context
-            # This is where the error occurred, but the logic is correct. 
-            # The issue is an external/previous process holding the device.
-            device = stack.enter_context(dai.Device(deviceInfo)) 
-            # Enter the pipeline into the context for implicit pipeline usage
-            pipeline = stack.enter_context(dai.Pipeline())
+        pipeline = stack.enter_context(dai.Pipeline(dai.Device(deviceInfo)))
+        device = pipeline.getDefaultDevice()
 
-            print("=== Connected to", deviceInfo.getDeviceId())
-            print("    Device ID:", device.getDeviceId())
-            print("    Num of cameras:", len(device.getConnectedCameras()))
+        print("=== Connected to", deviceInfo.getDeviceId())
+        print("    Device ID:", device.getDeviceId())
+        print("    Num of cameras:", len(device.getConnectedCameras()))
 
-            socket = device.getConnectedCameras()[0]
-            topics, sync_queue, analyzer_out, nodes, sample_q, video_q, manip_host_q = build_nodes_on_pipeline(pipeline, device, socket)
-            
-            # Create analyzer host queue PRE-BUILD so DepthAI sees the HostNode link
-            analyzer_q = analyzer_out.createOutputQueue(1, False)
-            if sample_q is not None:
-                sample_queues.append(sample_q)
-            if video_q is not None:
-                video_queues.append(video_q)
-                
-            # Keep host-linked queues alive to maintain HostNode links
-            sync_queues.append(sync_queue)
-            
-            # Only append manip_host_q if it's not None
-            if manip_host_q is not None:
-                manip_host_queues.append(manip_host_q)
+        socket = device.getConnectedCameras()[0]
+        topics, sync_queue, analyzer_out, nodes, sample_q, video_q, manip_host_q = build_nodes_on_pipeline(pipeline, device, socket)
+        # Create analyzer host queue PRE-BUILD so DepthAI sees the HostNode link
+        analyzer_q = analyzer_out.createOutputQueue(1, False)
+        if sample_q is not None:
+            sample_queues.append(sample_q)
+        if video_q is not None:
+            video_queues.append(video_q)
+        # Keep host-linked queues alive to maintain HostNode links
+        sync_queues.append(sync_queue)
+        manip_host_queues.append(manip_host_q)
 
-            # Add topics BEFORE starting the pipeline (queues must be created pre-build)
-            if ENABLE_VISUALIZER_PIPELINES and visualizer is not None:
-                suffix = f" [{device.getDeviceId()}]"
-                for title, output, topic_type in topics:
-                    visualizer.addTopic(title + suffix, output, topic_type)
+        # Add topics BEFORE starting the pipeline (queues must be created pre-build)
+        if ENABLE_VISUALIZER_PIPELINES and visualizer is not None:
+            suffix = f" [{device.getDeviceId()}]"
+            for title, output, topic_type in topics:
+                visualizer.addTopic(title + suffix, output, topic_type)
 
-            device_ids.append(device.getDeviceId())
-            pipelines.append(pipeline)
-            analyzer_queues.append(analyzer_q)
-            topics_by_device.append(topics)
-            liveness_refs.append(nodes)
-            
-        except RuntimeError as e:
-            # Handle the case where a device can't be opened, so the script can try the next one
-            if "No depthai device found" in str(e) or "Device is already used" in str(e):
-                 print(f"Skipping device {deviceInfo.getDeviceId()}: {e}")
-                 continue # Skip to the next device
-            raise # Re-raise other errors
+        device_ids.append(device.getDeviceId())
+        pipelines.append(pipeline)
+        analyzer_queues.append(analyzer_q)
+        topics_by_device.append(topics)
+        liveness_refs.append(nodes)
 
     # Create LED grid comparison once we have at least two analyzer queues
     comparison_node = None
@@ -220,12 +201,12 @@ with contextlib.ExitStack() as stack:
         if led_vis_out is None:
             # Final fallback to the first topic output
             led_vis_out = topics_by_device[0][0][1]
-            
         comparison_node = LEDGridComparison(
             grid_size=32,
             output_size=(1024, 1024)
         ).build(led_vis_out)
-        
+        # Provide the two analyzer queues (master first)
+        # comparison_node.set_queues(analyzer_queues[0], analyzer_queues[1])
         # Expose comparison topics in the visualizer
         visualizer.addTopic("LED Overlay [comparison]", comparison_node.out_overlay, "led")
         visualizer.addTopic("LED Sync Report [comparison]", comparison_node.out_report, "video")
@@ -233,11 +214,8 @@ with contextlib.ExitStack() as stack:
     # Start all pipelines after all topics (including comparison) are registered
     for p in pipelines:
         try:
-            # p.start() implicitly calls pipeline.build()
             p.start()
-            # Register the now-built pipeline with the visualizer
-            if visualizer is not None:
-                visualizer.registerPipeline(p)
+            visualizer.registerPipeline(p)
         except Exception as e:
             import sys
             sys.stderr.buffer.write(("Pipeline start failed: %r\n" % (e,)).encode("utf-8", "backslashreplace"))
