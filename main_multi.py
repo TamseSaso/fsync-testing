@@ -28,8 +28,7 @@ class FPSCounter:
 
 # Define two devices here; put master first. Update to your IPs/IDs.
 DEVICE_INFOS = [
-    dai.DeviceInfo("10.12.211.82"),
-    dai.DeviceInfo("10.12.211.84"),
+    dai.DeviceInfo("10.12.211.82", "10.12.211.84"),
 ]
 
 # Synchronization settings
@@ -52,7 +51,7 @@ ENABLE_VISUALIZER_COMPARISON = True  # enable comparison topics
  # Disable local OpenCV window (set to True to see a host-side, sync-gated composite for debugging)
 SHOW_LOCAL_WINDOW = False
 visualizer = None
-if ENABLE_VISUALIZER_PIPELINES or ENABLE_VISUALIZER_COMPARISON:
+if ENABLE_VISUALZIER_PIPELINES or ENABLE_VISUALIZER_COMPARISON:
     visualizer = dai.RemoteConnection(httpPort=8082)
 
 
@@ -72,14 +71,27 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     if SET_MANUAL_EXPOSURE:
         cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=100)
     source_out = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
-    manip = pipeline.create(dai.node.ImageManip)
-    manip.setMaxOutputFrameSize(8 * 1024 * 1024)
-    manip.initialConfig.addRotateDeg(180)
-    source_out.link(manip.inputImage)
-    source_out = manip.out
 
-    # Ensure ImageManip.out has a HostNode link pre-build (required by new builder)
-    manip_host_q = manip.out.createOutputQueue(1, False)
+    # --- START FIX ---
+    # Original manip for rotation
+    manip_rotate = pipeline.create(dai.node.ImageManip)
+    manip_rotate.setMaxOutputFrameSize(8 * 1024 * 1024)
+    manip_rotate.initialConfig.addRotateDeg(180)
+    source_out.link(manip_rotate.inputImage)
+
+    # NEW: Add a passthrough ImageManip node to fork the stream
+    # This is a common workaround for "not linked to HostNode" errors.
+    manip_passthrough = pipeline.create(dai.node.ImageManip)
+    manip_passthrough.setMaxOutputFrameSize(8 * 1024 * 1024) # Set max size
+    manip_rotate.out.link(manip_passthrough.inputImage)
+
+    # Use the passthrough node's output as the new source
+    source_out = manip_passthrough.out
+
+    # Link the *new* source_out (manip_passthrough.out) to the host
+    manip_host_q = source_out.createOutputQueue(1, False)
+    # --- END FIX ---
+
 
     # Device-side sync gate: quantize frames to PTP slots at camera FPS so all devices publish the same timestamps
     sync_gate_node = FrameSamplingNode(ptp_slot_period_sec=1.0 / fps_limit).build(source_out)
@@ -135,7 +147,10 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     sync_queue = sync_gate_node.out.createOutputQueue(1, False)
 
     # Return topics, sync queue, analyzer queue, and strong references to nodes to prevent premature GC
-    nodes = [cam, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
+    # --- START FIX ---
+    # Add the new manip nodes to the list to keep them alive
+    nodes = [cam, manip_rotate, manip_passthrough, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
+    # --- END FIX ---
 
     return topics, sync_queue, analyzer_out, nodes, sample_q, video_q, manip_host_q
 
@@ -218,6 +233,7 @@ with contextlib.ExitStack() as stack:
             visualizer.registerPipeline(p)
         except Exception as e:
             import sys
+            # Correctly handle printing the exception to stderr, even with encoding issues
             sys.stderr.buffer.write(("Pipeline start failed: %r\n" % (e,)).encode("utf-8", "backslashreplace"))
             raise
 
