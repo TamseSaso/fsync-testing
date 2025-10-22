@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 
+"""
+Minimal changes to original script:
+  * Adds simple timestamp-based synchronisation across multiple devices.
+  * Presents frames side‑by‑side when they are within 1 / FPS seconds.
+  * Keeps v3 API usage and overall code structure intact.
+  * Visualization is handled by the DepthAI visualizer (no annotations).
+"""
+
 import contextlib
 import datetime
 import time
 import cv2
 import depthai as dai
-
-from utils.arguments import initialize_argparser
-from utils.apriltag_node import AprilTagAnnotationNode
-from utils.video_annotation_composer import VideoAnnotationComposer
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-_, args = initialize_argparser()
-panel_width, panel_height = map(int, args.panel_size.split(","))
 TARGET_FPS = 25  # Must match sensorFps in createPipeline()
 SYNC_THRESHOLD_SEC = 1.0 / (2 * TARGET_FPS)  # Max drift to accept as "in sync"
 SET_MANUAL_EXPOSURE = True  # Set to True to use manual exposure settings
@@ -65,35 +67,12 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
     manip.setMaxOutputFrameSize(4 * 1024 * 1024)
     manip.initialConfig.addRotateDeg(180)
     node_out.link(manip.inputImage)
-    
-    # --- START FIX ---
-    # This is the raw node output for the visualizer and downstream nodes
-    raw_node_out = manip.out 
-    
-    # This creates the explicit host-side queue for the timestamp sync loop
-    sync_queue_out = raw_node_out.createOutputQueue()
-    # --- END FIX ---
-
+    node_out = manip.out
+    output = node_out.createOutputQueue()
     if SET_MANUAL_EXPOSURE:
         camRgb.initialControl.setManualExposure(6000, 100)
-
-    # AprilTag annotation node
-    # Build subsequent nodes from the raw_node_out
-    apriltag_node = AprilTagAnnotationNode(
-        families=args.apriltag_families,
-        max_tags=args.apriltag_max,
-        quad_decimate=args.apriltag_decimate,
-        quad_sigma=args.apriltag_sigma,
-        decode_sharpening=args.apriltag_sharpening,
-        decision_margin=args.apriltag_decision_margin,
-        persistence_seconds=args.apriltag_persistence,
-    ).build(raw_node_out) # <-- Use raw_node_out
-
-    video_composer = VideoAnnotationComposer().build(raw_node_out, apriltag_node.out) # <-- Use raw_node_out
-    composed_out = video_composer.out
-
-    # Return node outputs for visualizer AND the queue for the sync loop
-    return pipeline, raw_node_out, composed_out, sync_queue_out
+    # Backwards-compatible return plus node output for visualizer usage
+    return pipeline, output, node_out
 
 # ---------------------------------------------------------------------------
 # Main
@@ -117,23 +96,16 @@ with contextlib.ExitStack() as stack:
         print("    Num of cameras:", len(device.getConnectedCameras()))
 
         socket = device.getConnectedCameras()[0]
-        
-        # --- START FIX ---
-        # Unpack the new return values
-        pipeline, raw_node_out, composed_out, sync_queue = createPipeline(pipeline, socket)
+        pipeline, out_q, node_out = createPipeline(pipeline, socket)
 
-        # Register topics per device: Give visualizer the NODE OUTPUTS
+        # Register topic per device without any annotations (raw stream)
         suffix = f" [{device.getDeviceId()}]"
-        visualizer.addTopic("Camera+Tags" + suffix, composed_out, "video")
-        
+        visualizer.addTopic("Camera" + suffix, node_out, "video")
         pipeline.start()
         visualizer.registerPipeline(pipeline)
 
         pipelines.append(pipeline)
-        
-        # FIX 2: Append the actual QUEUE object for the sync loop
-        queues.append(sync_queue)
-        
+        queues.append(out_q)
         device_ids.append(deviceInfo.getXLinkDeviceDesc().name)
 
     # Buffer for latest frames; key = queue index
@@ -143,7 +115,6 @@ with contextlib.ExitStack() as stack:
     while True:
         # -------------------------------------------------------------------
         # Collect the newest frame from each queue (non‑blocking)
-        # (This loop will now work correctly)
         # -------------------------------------------------------------------
         for idx, q in enumerate(queues):
             while q.has():
@@ -155,7 +126,6 @@ with contextlib.ExitStack() as stack:
 
         # -------------------------------------------------------------------
         # Synchronise gate (no OpenCV visualization in this version)
-        # (This will also work correctly)
         # -------------------------------------------------------------------
         if len(latest_frames) == len(queues):
             ts_values = [f.getTimestamp(dai.CameraExposureOffset.END).total_seconds() for f in latest_frames.values()]
