@@ -88,29 +88,23 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
         cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=100)
     source_out = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
 
-    # --- START FIX ---
     # Original manip for rotation
     manip_rotate = pipeline.create(dai.node.ImageManip)
     manip_rotate.setMaxOutputFrameSize(8 * 1024 * 1024)
     manip_rotate.initialConfig.addRotateDeg(180)
-    source_out.link(manip_rotate.inputImage)
+    source_out.link(manip_rotate.inputImage) # Link camera to rotation node
 
-    # NEW: Add a passthrough ImageManip node to fork the stream
-    # This is a common workaround for "not linked to HostNode" errors.
-    manip_passthrough = pipeline.create(dai.node.ImageManip)
-    manip_passthrough.setMaxOutputFrameSize(8 * 1024 * 1024) # Set max size
-    manip_rotate.out.link(manip_passthrough.inputImage)
+    # Use the rotated output as the new source for the rest of the pipeline
+    source_out = manip_rotate.out
 
-    # Use the passthrough node's output as the new source
-    source_out = manip_passthrough.out
-
-    # Link the *new* source_out (manip_passthrough.out) to the host
+    # Link the *new* source_out (manip_rotate.out) to the host
+    # This creates the required 'HostNode' link to satisfy the validator.
+    # We don't need to read from this queue; it just ensures the stream is valid.
     manip_host_q = source_out.createOutputQueue(1, False)
-    # --- END FIX ---
 
 
     # Device-side sync gate: quantize frames to PTP slots at camera FPS so all devices publish the same timestamps
-    sync_gate_node = FrameSamplingNode(ptp_slot_period_sec=1.0 / fps_limit).build(manip_host_q)
+    sync_gate_node = FrameSamplingNode(ptp_slot_period_sec=1.0 / fps_limit).build(source_out)
     # Optional host queue on gated stream (depth=1, non-blocking) to avoid backlog drift
 
     # AprilTag detection and annotations
@@ -162,11 +156,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     # Create a host queue on the base stream to ensure a HostNode link exists pre-build
     sync_queue = sync_gate_node.out.createOutputQueue(1, False)
 
-    # Return topics, sync queue, analyzer queue, and strong references to nodes to prevent premature GC
-    # --- START FIX ---
-    # Add the new manip nodes to the list to keep them alive
-    nodes = [cam, manip_rotate, manip_passthrough, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
-    # --- END FIX ---
+    nodes = [cam, manip_rotate, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
 
     return topics, sync_queue, analyzer_out, nodes, sample_q, video_q, manip_host_q
 
