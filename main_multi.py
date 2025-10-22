@@ -88,7 +88,6 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
         cam.initialControl.setManualExposure(exposureTimeUs=6000, sensitivityIso=100)
     source_out = cam.requestOutput((1920, 1080), frame_type, fps=fps_limit)
 
-    # Original manip for rotation
     manip_rotate = pipeline.create(dai.node.ImageManip)
     manip_rotate.setMaxOutputFrameSize(8 * 1024 * 1024)
     manip_rotate.initialConfig.addRotateDeg(180)
@@ -157,7 +156,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     sync_queue = sync_gate_node.out.createOutputQueue(1, False)
 
     nodes = [cam, manip_rotate, apriltag_node, warp_node, sampling_node, led_analyzer, led_visualizer, video_composer]
-
+    
     return topics, sync_queue, analyzer_out, nodes, sample_q, video_q, manip_host_q
 
 
