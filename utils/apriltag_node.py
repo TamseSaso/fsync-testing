@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import cv2
 import depthai as dai
@@ -21,16 +21,16 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
     """
 
     def __init__(
-        self, 
-        families: str = "tag36h11", 
-        max_tags: int = 4, 
-        quad_decimate: float = 0.8,
-        quad_sigma: float = 0.5,
-        decode_sharpening: float = 0.6,
+        self,
+        families: str = "tag36h11",
+        max_tags: int = 64,
+        quad_decimate: float = 1.0,
+        quad_sigma: float = 0.0,
+        decode_sharpening: float = 0.25,
         refine_edges: bool = True,
-        decision_margin: float = 5.0,
-        persistence_seconds: float = 240.0,
-        wait_for_n_tags: int | None = 4
+        decision_margin: float = 50.0,
+        persistence_seconds: float = 0.2,
+        wait_for_n_tags: Optional[int] = None,
     ) -> None:
         super().__init__()
 
@@ -128,6 +128,8 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
 
             # Filter detections by decision_margin threshold
             detections = [det for det in all_detections if det.decision_margin >= self.decision_margin]
+            if self.max_tags is not None and self.max_tags > 0:
+                detections = detections[: int(self.max_tags)]
 
             # Fallback: if none detected and decimate > 1.2, run a persistent high-res detector
             if not detections and (self.quad_decimate is None or self.quad_decimate > 1.2):
@@ -144,7 +146,7 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                 detections = [det for det in detections if det.decision_margin >= self.decision_margin]
 
             # If requested, wait until we see the desired number of unique tags in the *current* frame
-            if self.wait_for_n_tags is not None and self.wait_for_n_tags > 0:
+            if self.wait_for_n_tags is not None and int(self.wait_for_n_tags) > 0:
                 unique_current_ids = {int(det.tag_id) for det in detections}
                 if len(unique_current_ids) < int(self.wait_for_n_tags):
                     # Not enough tags yet; skip output this frame
