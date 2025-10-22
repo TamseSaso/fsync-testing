@@ -224,7 +224,7 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                 )
 
             annotations_msg = annotations.build(
-                timestamp=frame_msg.getTimestamp(),
+                timestamp=frame_msg.getTimestamp(dai.CameraExposureOffset.END),
                 sequence_num=frame_msg.getSequenceNum(),
             )
 

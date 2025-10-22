@@ -93,7 +93,7 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
                 output_msg.setType(dai.ImgFrame.Type.BGR888i)
                 output_msg.setWidth(w)
                 output_msg.setHeight(h)
-                output_msg.setTimestamp(video_msg.getTimestamp())
+                output_msg.setTimestamp(video_msg.getTimestamp(dai.CameraExposureOffset.END))
                 output_msg.setSequenceNum(video_msg.getSequenceNum())
                 output_msg.setData(bgr_frame.tobytes())
 
