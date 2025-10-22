@@ -65,8 +65,7 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
     manip.setMaxOutputFrameSize(4 * 1024 * 1024)
     manip.initialConfig.addRotateDeg(180)
     node_out.link(manip.inputImage)
-    node_out = manip.out
-    output = node_out.createOutputQueue()
+    output = manip.out
     # Removed host queue creation from ImageManip output
     if SET_MANUAL_EXPOSURE:
         camRgb.initialControl.setManualExposure(6000, 100)
