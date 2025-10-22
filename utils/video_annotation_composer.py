@@ -20,10 +20,7 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
         self.video_input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
         
         self.annotations_input = self.createInput()
-        self.annotations_input.setPossibleDatatypes([
-            (dai.DatatypeEnum.ImgAnnotations, True),
-            (dai.DatatypeEnum.Buffer, True)
-        ])
+        self.annotations_input.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, True)])
         
         # Create output for composited video
         self.out = self.createOutput()
@@ -92,9 +89,8 @@ class VideoAnnotationComposer(dai.node.ThreadedHostNode):
 
                 # Create output frame message
                 output_msg = dai.ImgFrame()
-                # Send as interleaved BGR to match OpenCV memory layout
-                output_msg.setData(bgr_frame.tobytes())
-                output_msg.setType(dai.ImgFrame.Type.BGR888i)
+                output_msg.setData(bgr_frame.flatten())
+                output_msg.setType(video_msg.getType())
                 output_msg.setWidth(bgr_frame.shape[1])
                 output_msg.setHeight(bgr_frame.shape[0])
                 output_msg.setTimestamp(video_msg.getTimestamp())

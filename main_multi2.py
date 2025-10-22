@@ -129,7 +129,6 @@ with contextlib.ExitStack() as stack:
         
         pipeline.start()
         visualizer.registerPipeline(pipeline)
-        # --- END FIX ---
 
         pipelines.append(pipeline)
         

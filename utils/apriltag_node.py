@@ -38,10 +38,7 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
         self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
 
         self.out = self.createOutput()
-        self.out.setPossibleDatatypes([
-            (dai.DatatypeEnum.ImgAnnotations, True),
-            (dai.DatatypeEnum.Buffer, True)
-        ])
+        self.out.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, True)])
 
         self.families = families
         self.max_tags = max_tags
@@ -221,7 +218,7 @@ class AprilTagAnnotationNode(dai.node.ThreadedHostNode):
                 persistent_color = (0.0, 1.0, 0.0, 0.5)
                 annotations.draw_rectangle((xmin, ymin), (xmax, ymax), outline_color=persistent_color)
                 annotations.draw_text(
-                    text=f"ID {persist_det['tag_id']} (persist)",
+                    text=f"ID {persist_det['tag_id']} 📍",
                     position=(min(max(0.0, xmin + 0.005), 0.98), max(0.0, ymin + 0.02)),
                     size=18,
                 )
