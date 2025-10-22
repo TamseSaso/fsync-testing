@@ -61,6 +61,9 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
     manip.initialConfig.addRotateDeg(180)
     node_out.link(manip.inputImage)
     node_out = manip.out
+    output = node_out.createOutputQueue()
+    if SET_MANUAL_EXPOSURE:
+        camRgb.initialControl.setManualExposure(6000, 100)
 
     # AprilTag annotation node (fixed parameters — no args parser)
     apriltag_node = AprilTagAnnotationNode(
@@ -71,13 +74,10 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
         decode_sharpening=0.25,
         decision_margin=50.0,
         persistence_seconds=0.2,
-    ).build(node_out)
+    ).build(output)
 
     apriltag_out = apriltag_node.out
 
-    output = node_out.createOutputQueue()
-    if SET_MANUAL_EXPOSURE:
-        camRgb.initialControl.setManualExposure(6000, 100)
     # Backwards-compatible return plus node output for visualizer usage
     return pipeline, output, node_out, apriltag_out
 
@@ -109,6 +109,7 @@ with contextlib.ExitStack() as stack:
         suffix = f" [{device.getDeviceId()}]"
         visualizer.addTopic("Camera" + suffix, node_out, "video")
         visualizer.addTopic("AprilTags" + suffix, apriltag_out, "video")
+        
         pipeline.start()
         visualizer.registerPipeline(pipeline)
 
