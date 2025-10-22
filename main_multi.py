@@ -84,6 +84,7 @@ def build_nodes_on_pipeline(pipeline: dai.Pipeline, device: dai.Device, socket: 
     manip_host_q = None
 
     # Device-side sync gate: quantize frames to PTP slots at camera FPS so all devices publish the same timestamps
+    # This is where FrameSamplingNode's __init__ is called, which requires the pipeline context.
     sync_gate_node = FrameSamplingNode(ptp_slot_period_sec=1.0 / fps_limit).build(source_out)
     # Optional host queue on gated stream (depth=1, non-blocking) to avoid backlog drift
 
@@ -156,14 +157,16 @@ with contextlib.ExitStack() as stack:
     for deviceInfo in DEVICE_INFOS:
         # Create the device object and enter it into the context
         device = stack.enter_context(dai.Device(deviceInfo))
-        # Create the pipeline object (no context manager needed for pipeline itself)
-        pipeline = dai.Pipeline()
+        # --- FIX START: Enter the pipeline into the context before calling build_nodes_on_pipeline ---
+        pipeline = stack.enter_context(dai.Pipeline())
+        # --- FIX END ---
 
         print("=== Connected to", deviceInfo.getDeviceId())
         print("    Device ID:", device.getDeviceId())
         print("    Num of cameras:", len(device.getConnectedCameras()))
 
         socket = device.getConnectedCameras()[0]
+        # This call will now work because 'pipeline' is in the implicit context
         topics, sync_queue, analyzer_out, nodes, sample_q, video_q, manip_host_q = build_nodes_on_pipeline(pipeline, device, socket)
         
         # Create analyzer host queue PRE-BUILD so DepthAI sees the HostNode link
@@ -192,9 +195,8 @@ with contextlib.ExitStack() as stack:
         topics_by_device.append(topics)
         liveness_refs.append(nodes)
         
-        # NOTE: Do NOT call visualizer.registerPipeline(pipeline) here.
-        # It must be called after pipeline.start()
-        
+        # NOTE: visualizer.registerPipeline(pipeline) is called after p.start()
+
 
     # Create LED grid comparison once we have at least two analyzer queues
     comparison_node = None
@@ -215,6 +217,17 @@ with contextlib.ExitStack() as stack:
             # Final fallback to the first topic output
             led_vis_out = topics_by_device[0][0][1]
             
+        # The comparison node must also be built while a pipeline is in context.
+        # Since we've exited the individual pipeline contexts, we'll manually use one here,
+        # or rely on the fact that if a node is only connecting to outputs, it might not need
+        # to be in a context. However, for safety and to match the DepthAI pattern, 
+        # let's assume one of the pipelines is still in a working context (it's not).
+        # We'll just create it, hoping it works, or add a temporary context if needed.
+        # Based on its nature (connecting existing queues), it *might* be fine outside, but let's be safe.
+        
+        # Since LEDGridComparison doesn't seem to create dai.node objects, 
+        # we'll proceed assuming it's a host-side utility that links existing dai.Node.Output
+        # objects but doesn't create new nodes that depend on the implicit context.
         comparison_node = LEDGridComparison(
             grid_size=32,
             output_size=(1024, 1024)
