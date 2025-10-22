@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
 
-# Ensure any strings we pass into pipeline/visualizer are ASCII-only
-
-def _ascii_safe(s: str) -> str:
-    try:
-        return s.encode('ascii', 'ignore').decode('ascii')
-    except Exception:
-        return ''.join(ch for ch in s if ord(ch) < 128)
-
 import contextlib
 import datetime
 import time
@@ -69,6 +61,7 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
     manip.initialConfig.addRotateDeg(180)
     node_out.link(manip.inputImage)
     node_out = manip.out
+    output = node_out.createOutputQueue()
     if SET_MANUAL_EXPOSURE:
         camRgb.initialControl.setManualExposure(6000, 100)
 
@@ -84,8 +77,6 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
     ).build(node_out)
 
     apriltag_out = apriltag_node.out
-
-    output = apriltag_out.createOutputQueue()
 
     # Backwards-compatible return plus node output for visualizer usage
     return pipeline, output, node_out, apriltag_out
@@ -115,9 +106,9 @@ with contextlib.ExitStack() as stack:
         pipeline, out_q, node_out, apriltag_out = createPipeline(pipeline, socket)
 
         # Register topics per device: raw and AprilTag-annotated streams
-        suffix = _ascii_safe(f" [{device.getDeviceId()}]")
-        visualizer.addTopic(_ascii_safe("Camera" + suffix), node_out, "video")
-        visualizer.addTopic(_ascii_safe("AprilTags" + suffix), apriltag_out, "annotations")
+        suffix = f" [{device.getDeviceId()}]"
+        visualizer.addTopic("Camera" + suffix, node_out, "video")
+        visualizer.addTopic("AprilTags" + suffix, apriltag_out, "video")
         
         pipeline.start()
         visualizer.registerPipeline(pipeline)
