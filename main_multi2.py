@@ -5,11 +5,15 @@ import datetime
 import time
 import cv2
 import depthai as dai
+
+from utils.arguments import initialize_argparser
 from utils.apriltag_node import AprilTagAnnotationNode
 from utils.video_annotation_composer import VideoAnnotationComposer
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+_, args = initialize_argparser()
+panel_width, panel_height = map(int, args.panel_size.split(","))
 TARGET_FPS = 25  # Must match sensorFps in createPipeline()
 SYNC_THRESHOLD_SEC = 1.0 / (2 * TARGET_FPS)  # Max drift to accept as "in sync"
 SET_MANUAL_EXPOSURE = True  # Set to True to use manual exposure settings
@@ -62,28 +66,28 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
     manip.initialConfig.addRotateDeg(180)
     node_out.link(manip.inputImage)
     node_out = manip.out
+    output = node_out.createOutputQueue()
     # Removed host queue creation from ImageManip output
     if SET_MANUAL_EXPOSURE:
         camRgb.initialControl.setManualExposure(6000, 100)
 
     # AprilTag annotation node (fixed parameters — no args parser)
     apriltag_node = AprilTagAnnotationNode(
-        families="tag36h11",
-        max_tags=64,
-        quad_decimate=1.0,
-        quad_sigma=0.0,
-        decode_sharpening=0.25,
-        decision_margin=50.0,
-        persistence_seconds=0.2,
-    ).build(node_out)
-    apriltag_out = apriltag_node.out
+        families=args.apriltag_families,
+        max_tags=args.apriltag_max,
+        quad_decimate=args.apriltag_decimate,
+        quad_sigma=args.apriltag_sigma,
+        decode_sharpening=args.apriltag_sharpening,
+        decision_margin=args.apriltag_decision_margin,
+        persistence_seconds=args.apriltag_persistence,
+    ).build(output)
 
-    video_composer = VideoAnnotationComposer().build(node_out, apriltag_out)
+    video_composer = VideoAnnotationComposer().build(output, apriltag_node.out)
     composed_out = video_composer.out
-    output = composed_out.createOutputQueue()
+    apriltag_out = composed_out.createOutputQueue()
 
     # Backwards-compatible return plus node output for visualizer usage
-    return pipeline, output, node_out, composed_out
+    return pipeline, output, apriltag_out
 
 # ---------------------------------------------------------------------------
 # Main
@@ -107,12 +111,12 @@ with contextlib.ExitStack() as stack:
         print("    Num of cameras:", len(device.getConnectedCameras()))
 
         socket = device.getConnectedCameras()[0]
-        pipeline, out_q, node_out, composed_out = createPipeline(pipeline, socket)
+        pipeline, out_q, apriltag_out = createPipeline(pipeline, socket)
 
         # Register topics per device: raw and composed streams (no separate AprilTag annotations topic)
         suffix = f" [{device.getDeviceId()}]"
-        visualizer.addTopic("Camera" + suffix, node_out, "video")
-        visualizer.addTopic("Camera+Tags" + suffix, composed_out, "video")
+        visualizer.addTopic("Camera" + suffix, out_q, "video")
+        visualizer.addTopic("Camera+Tags" + suffix, apriltag_out, "video")
         
         pipeline.start()
         visualizer.registerPipeline(pipeline)
