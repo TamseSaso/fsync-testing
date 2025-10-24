@@ -87,9 +87,10 @@ with contextlib.ExitStack() as stack:
     queues = []
     pipelines = []
     device_ids = []
+    samplers = []
 
     # Create one global ticker so all devices sample at the same wall-clock time
-    shared_ticker = SharedTicker(period_sec=5.0, start_delay_sec=0.0)
+    shared_ticker = SharedTicker(period_sec=5.0, start_delay_sec=0.25)
 
     for deviceInfo in DEVICE_INFOS:
         pipeline = stack.enter_context(dai.Pipeline(dai.Device(deviceInfo)))
@@ -104,6 +105,7 @@ with contextlib.ExitStack() as stack:
 
         # Sample a frame every 5 seconds from the live stream, synchronized via a shared ticker
         sampler = FrameSamplingNode(sample_interval_seconds=5.0, shared_ticker=shared_ticker).build(node_out)
+        samplers.append(sampler)
 
         apriltag_node = AprilTagAnnotationNode(
                 families=args.apriltag_families,
@@ -129,7 +131,9 @@ with contextlib.ExitStack() as stack:
         queues.append(out_q)
         device_ids.append(deviceInfo.getXLinkDeviceDesc().name)
 
-    # Start synchronized sampling across all devices
+    # Wait until every sampler has received at least one frame, then start the global ticker
+    for s in samplers:
+        s.wait_first_frame(timeout=2.0)
     shared_ticker.start()
 
     # Visualizer drives display and sync; no host queue consumption here
