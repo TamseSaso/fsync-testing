@@ -8,7 +8,7 @@ import depthai as dai
 from utils.arguments import initialize_argparser
 from utils.apriltag_node import AprilTagAnnotationNode
 from utils.video_annotation_composer import VideoAnnotationComposer
-from utils.sampling_node import FrameSamplingNode
+from utils.sampling_node import FrameSamplingNode, SharedTicker
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -88,6 +88,9 @@ with contextlib.ExitStack() as stack:
     pipelines = []
     device_ids = []
 
+    # Create one global ticker so all devices sample at the same wall-clock time
+    shared_ticker = SharedTicker(period_sec=5.0, start_delay_sec=0.0)
+
     for deviceInfo in DEVICE_INFOS:
         pipeline = stack.enter_context(dai.Pipeline(dai.Device(deviceInfo)))
         device = pipeline.getDefaultDevice()
@@ -99,8 +102,8 @@ with contextlib.ExitStack() as stack:
         socket = device.getConnectedCameras()[0]
         pipeline, out_q, node_out = createPipeline(pipeline, socket)
 
-        # Sample a frame every 5 seconds from the live stream
-        sampler = FrameSamplingNode(sample_interval_seconds=5.0).build(node_out)
+        # Sample a frame every 5 seconds from the live stream, synchronized via a shared ticker
+        sampler = FrameSamplingNode(sample_interval_seconds=5.0, shared_ticker=shared_ticker).build(node_out)
 
         apriltag_node = AprilTagAnnotationNode(
                 families=args.apriltag_families,
@@ -125,6 +128,9 @@ with contextlib.ExitStack() as stack:
         pipelines.append(pipeline)
         queues.append(out_q)
         device_ids.append(deviceInfo.getXLinkDeviceDesc().name)
+
+    # Start synchronized sampling across all devices
+    shared_ticker.start()
 
     # Visualizer drives display and sync; no host queue consumption here
     while True:
