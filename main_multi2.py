@@ -1,4 +1,3 @@
-from collections import deque
 #!/usr/bin/env python3
 
 import contextlib
@@ -9,7 +8,6 @@ import depthai as dai
 from utils.arguments import initialize_argparser
 from utils.apriltag_node import AprilTagAnnotationNode
 from utils.video_annotation_composer import VideoAnnotationComposer
-from utils.apriltag_warp_node import AprilTagWarpNode
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -72,7 +70,7 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
     # No host output queue here; host nodes consume the stream
     output = None
     if SET_MANUAL_EXPOSURE:
-        camRgb.initialControl.setManualExposure(6000, 200)
+        camRgb.initialControl.setManualExposure(6000, 100)
     # Backwards-compatible return plus node output for visualizer usage
     return pipeline, output, node_out
 
@@ -112,20 +110,10 @@ with contextlib.ExitStack() as stack:
 
         composer = VideoAnnotationComposer().build(node_out, apriltag_node.out)
 
-        warp_node = AprilTagWarpNode(
-            panel_width,
-            panel_height,
-            families=args.apriltag_families,
-            quad_decimate=args.apriltag_decimate,
-            tag_size=args.apriltag_size,
-            z_offset=args.z_offset,
-        ).build(node_out)
-
         # Register topic per device without any annotations (raw stream)
         suffix = f" [{device.getDeviceId()}]"
         visualizer.addTopic("Camera" + suffix, node_out, "video")
         visualizer.addTopic("Camera+AprilTags" + suffix, composer.out, "video")
-        visualizer.addTopic("Warped" + suffix, warp_node.out, "video")
         pipeline.start()
         visualizer.registerPipeline(pipeline)
 
