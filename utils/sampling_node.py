@@ -51,7 +51,7 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
     Output: dai.ImgFrame (sampled at specified interval)
     """
 
-    def __init__(self, sample_interval_seconds: float = 5.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = None, ptp_slot_phase: float = 0.0) -> None:
+    def __init__(self, sample_interval_seconds: float = 5.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = None, ptp_slot_phase: float = 0.0, emit_first_frame_immediately: bool = True) -> None:
         super().__init__()
         
         self.input = self.createInput()
@@ -74,7 +74,7 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         except AttributeError:
             pass
         try:
-            self.out.setQueueSize(2)
+            self.out.setQueueSize(4)
         except AttributeError:
             pass
         
@@ -92,6 +92,7 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         self.frame_lock = threading.Lock()
         self._bootstrapped = False
         self._target_start_slot: Optional[int] = None
+        self.emit_first_frame_immediately = emit_first_frame_immediately
 
     def build(self, frames: dai.Node.Output) -> "FrameSamplingNode":
         frames.link(self.input)
@@ -162,6 +163,19 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                     if not self._first_frame_ev.is_set():
                         time.sleep(0.005)
                         continue
+
+                # NEW: emit once immediately so the visualizer shows something without waiting for multiple ticks
+                if self.emit_first_frame_immediately and not self._bootstrapped:
+                    with self.frame_lock:
+                        first = self.latest_frame
+                    if first is not None:
+                        try:
+                            self.out.send(first)
+                            print("FrameSamplingNode bootstrap emit (shared ticker)")
+                        except Exception as e:
+                            print(f"FrameSamplingNode send error (bootstrap): {e}")
+                        finally:
+                            self._bootstrapped = True
 
                 self._last_tick_idx = self.shared_ticker.wait_next_tick(self._last_tick_idx)
                 with self.frame_lock:
