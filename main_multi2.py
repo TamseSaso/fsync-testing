@@ -8,6 +8,7 @@ import depthai as dai
 from utils.arguments import initialize_argparser
 from utils.apriltag_node import AprilTagAnnotationNode
 from utils.video_annotation_composer import VideoAnnotationComposer
+from utils.sampling_node import FrameSamplingNode
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -98,6 +99,9 @@ with contextlib.ExitStack() as stack:
         socket = device.getConnectedCameras()[0]
         pipeline, out_q, node_out = createPipeline(pipeline, socket)
 
+        # Sample a frame every 5 seconds from the live stream
+        sampler = FrameSamplingNode(sample_interval_seconds=5.0).build(node_out)
+
         apriltag_node = AprilTagAnnotationNode(
                 families=args.apriltag_families,
                 max_tags=args.apriltag_max,
@@ -106,14 +110,15 @@ with contextlib.ExitStack() as stack:
                 decode_sharpening=args.apriltag_sharpening,
                 decision_margin=args.apriltag_decision_margin,
                 persistence_seconds=args.apriltag_persistence,
-            ).build(node_out)
+            ).build(sampler.out)
 
-        composer = VideoAnnotationComposer().build(node_out, apriltag_node.out)
+        composer = VideoAnnotationComposer().build(sampler.out, apriltag_node.out)
 
         # Register topic per device without any annotations (raw stream)
         suffix = f" [{device.getDeviceId()}]"
         visualizer.addTopic("Camera" + suffix, node_out, "video")
-        visualizer.addTopic("Camera+AprilTags" + suffix, composer.out, "video")
+        visualizer.addTopic("Sample" + suffix, sampler.out, "video")
+        visualizer.addTopic("Sample+AprilTags" + suffix, composer.out, "video")
         pipeline.start()
         visualizer.registerPipeline(pipeline)
 
