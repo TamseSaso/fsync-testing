@@ -107,8 +107,6 @@ with contextlib.ExitStack() as stack:
         sampler = FrameSamplingNode(sample_interval_seconds=5.0, shared_ticker=shared_ticker, emit_first_frame_immediately=False).build(node_out)
         samplers.append(sampler)
 
-        sample_queues = sampler.out.createOutputQueue(2, False)
-
         apriltag_node = AprilTagAnnotationNode(
                 families=args.apriltag_families,
                 max_tags=args.apriltag_max,
@@ -118,9 +116,9 @@ with contextlib.ExitStack() as stack:
                 decision_margin=args.apriltag_decision_margin,
                 persistence_seconds=args.apriltag_persistence,
                 wait_for_n_tags=None,
-            ).build(sample_queues)
+            ).build(sampler.out)
 
-        composer = VideoAnnotationComposer().build(sample_queues, apriltag_node.out)
+        composer = VideoAnnotationComposer().build(sampler.out, apriltag_node.out)
 
         # Register topic per device without any annotations (raw stream)
         suffix = f" [{device.getDeviceId()}]"
