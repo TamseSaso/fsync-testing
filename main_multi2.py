@@ -90,7 +90,7 @@ with contextlib.ExitStack() as stack:
     samplers = []
 
     # Create one global ticker so all devices sample at the same wall-clock time
-    shared_ticker = SharedTicker(period_sec=1.0, start_delay_sec=0.0)
+    shared_ticker = SharedTicker(period_sec=5.0, start_delay_sec=0.0)
 
     for deviceInfo in DEVICE_INFOS:
         pipeline = stack.enter_context(dai.Pipeline(dai.Device(deviceInfo)))
