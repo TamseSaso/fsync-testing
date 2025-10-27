@@ -5,7 +5,6 @@ import datetime
 import time
 import cv2
 import depthai as dai
-from main_multi import sample_queues
 from utils.arguments import initialize_argparser
 from utils.apriltag_node import AprilTagAnnotationNode
 from utils.video_annotation_composer import VideoAnnotationComposer
