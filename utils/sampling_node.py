@@ -81,18 +81,14 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         # Signal when the very first frame is seen (used to avoid missing the first shared tick)
         self._first_frame_ev = threading.Event()
         
-        self.sample_interval = sample_interval_seconds
+        self.sample_interval = float(sample_interval_seconds) if sample_interval_seconds else 5.0
         self.shared_ticker = shared_ticker
         self._last_tick_idx = 0
-        self.ptp_slot_period = ptp_slot_period_sec
-        self.ptp_slot_phase = float(ptp_slot_phase)
-        self._last_slot_idx = -1
-        self.last_sample_time = 0.0
         self.latest_frame: Optional[dai.ImgFrame] = None
         self.frame_lock = threading.Lock()
         self._bootstrapped = False
-        self._target_start_slot: Optional[int] = None
-        self.emit_first_frame_immediately = emit_first_frame_immediately
+        # Always emit only on synchronized ticks; no early/extra emits
+        self.emit_first_frame_immediately = False
 
     def build(self, frames: dai.Node.Output) -> "FrameSamplingNode":
         frames.link(self.input)
@@ -104,11 +100,9 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
 
     def run(self) -> None:
         if self.shared_ticker is not None:
-            print("FrameSamplingNode started with shared global ticker")
-        elif self.ptp_slot_period is not None:
-            print(f"FrameSamplingNode started with PTP slotting at period {self.ptp_slot_period}s (phase {self.ptp_slot_phase})")
+            print(f"FrameSamplingNode: synchronized sampling every {self.sample_interval}s via shared ticker")
         else:
-            print(f"FrameSamplingNode started with {self.sample_interval}s interval")
+            print(f"FrameSamplingNode: synchronized sampling every {self.sample_interval}s (internal ticker)")
         
         # Start the sampling timer thread
         sampling_thread = threading.Thread(target=self._sampling_loop, daemon=True)
@@ -142,93 +136,50 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                 # Mark that we've seen the very first frame
                 self._first_frame_ev.set()
 
-                # Bootstrap: emit first frame immediately ONLY in local timer mode
-                if not self._bootstrapped and (self.shared_ticker is None and self.ptp_slot_period is None):
-                    try:
-                        self.out.send(frame_msg)
-                        print("FrameSamplingNode bootstrap emit (local timer)")
-                    finally:
-                        self._bootstrapped = True
             except Exception as e:
                 print(f"FrameSamplingNode input error: {e}")
                 continue
 
     def _sampling_loop(self) -> None:
+        """Emit the most recent frame exactly every self.sample_interval seconds,
+        synchronized across all nodes via a shared ticker.
+        """
+        # Ensure we've actually seen a frame before we start ticking
+        while self.isRunning() and not self._first_frame_ev.is_set():
+            self._first_frame_ev.wait(timeout=0.05)
+
+        # Ensure a ticker exists; if none provided, create an internal one
+        if self.shared_ticker is None:
+            self.shared_ticker = SharedTicker(period_sec=self.sample_interval, start_delay_sec=0.0)
+            self.shared_ticker.start()
+
+        # If the shared ticker's period differs, compute how many ticks correspond to our interval
+        try:
+            stride = max(1, int(round(self.sample_interval / float(self.shared_ticker.period_sec))))
+        except Exception:
+            stride = 1
+
+        last_sent_idx = -1
         while self.isRunning():
-            # 1) Shared global ticker mode
-            if self.shared_ticker is not None:
-                # Ensure we've actually seen a frame before consuming the first tick
-                if not self._first_frame_ev.is_set():
-                    self._first_frame_ev.wait(timeout=2.0)
-                    if not self._first_frame_ev.is_set():
-                        time.sleep(0.005)
-                        continue
-
-                # NEW: emit once immediately so the visualizer shows something without waiting for multiple ticks
-                if self.emit_first_frame_immediately and not self._bootstrapped:
-                    with self.frame_lock:
-                        first = self.latest_frame
-                    if first is not None:
-                        try:
-                            self.out.send(first)
-                            print("FrameSamplingNode bootstrap emit (shared ticker)")
-                        except Exception as e:
-                            print(f"FrameSamplingNode send error (bootstrap): {e}")
-                        finally:
-                            self._bootstrapped = True
-
-                self._last_tick_idx = self.shared_ticker.wait_next_tick(self._last_tick_idx)
-                with self.frame_lock:
-                    frame = self.latest_frame
-                if frame is not None:
-                    try:
-                        self.out.send(frame)
-                    except Exception as e:
-                        print(f"FrameSamplingNode send error: {e}")
-                    print(f"Frame sampled on global tick #{self._last_tick_idx} at {time.monotonic():.3f}s")
-                else:
-                    print(f"FrameSamplingNode: no frame available on tick #{self._last_tick_idx}")
+            # Block until the next tick
+            self._last_tick_idx = self.shared_ticker.wait_next_tick(self._last_tick_idx)
+            # Only emit every `stride` ticks so we hit exactly self.sample_interval seconds
+            if (self._last_tick_idx % stride) != 0:
+                continue
+            # Avoid double-send on the same tick index in case of spurious wakeups
+            if self._last_tick_idx == last_sent_idx:
                 continue
 
-            # 2) PTP-slotted mode (device timestamps aligned by PTP)
-            if self.ptp_slot_period is not None:
-                with self.frame_lock:
-                    frame = self.latest_frame
-                if frame is not None:
-                    try:
-                        ts = frame.getTimestamp(dai.CameraExposureOffset.END).total_seconds()
-                    except Exception:
-                        # Fallback: if offset not supported, use default timestamp
-                        ts = frame.getTimestamp().total_seconds()
-                    slot_idx = int((ts + self.ptp_slot_phase) / self.ptp_slot_period)
-
-                    # If no rendezvous is set, align the first emission to the next slot boundary
-                    if self._target_start_slot is None:
-                        self._target_start_slot = slot_idx + 1
-                        print(f"FrameSamplingNode PTP: arming for next slot >= {self._target_start_slot}")
-                        time.sleep(0.0005)
-                        continue
-
-                    # If armed for a specific slot, hold until that slot is reached
-                    if slot_idx < self._target_start_slot:
-                        time.sleep(0.0005)
-                        continue
-
-                    if slot_idx > self._last_slot_idx:
-                        with self.frame_lock:
-                            if self.latest_frame is not None:
-                                self.out.send(self.latest_frame)
-                        self._last_slot_idx = slot_idx
-                        print(f"Frame sampled on PTP slot #{slot_idx} (ts={ts:.6f})")
-                # Avoid busy spin if no new frame yet
-                time.sleep(0.001)
-                continue
-
-            # 3) Local timer fallback
-            time.sleep(self.sample_interval)
             with self.frame_lock:
-                if self.latest_frame is not None:
-                    self.out.send(self.latest_frame)
-                    now = time.time()
-                    print(f"Frame sampled at {now:.2f}s")
-                    self.last_sample_time = now
+                frame = self.latest_frame
+            if frame is None:
+                # No frame available yet; try again on the next tick
+                continue
+
+            try:
+                self.out.send(frame)
+                boundary_t = getattr(self.shared_ticker, 'scheduled_time', lambda i: float('nan'))(self._last_tick_idx)
+                print(f"Frame sampled on global tick #{self._last_tick_idx} at {boundary_t:.3f}s (every {self.sample_interval:.1f}s)")
+                last_sent_idx = self._last_tick_idx
+            except Exception as e:
+                print(f"FrameSamplingNode send error: {e}")
