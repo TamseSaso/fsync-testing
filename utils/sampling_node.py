@@ -70,24 +70,6 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         self.out = self.createOutput()
         self.out.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
         
-        # Do not block upstream/downstream; keep small buffers
-        try:
-            self.input.setBlocking(False)
-        except AttributeError:
-            pass
-        try:
-            self.input.setQueueSize(4)
-        except AttributeError:
-            pass
-        try:
-            self.out.setBlocking(False)
-        except AttributeError:
-            pass
-        try:
-            self.out.setQueueSize(4)
-        except AttributeError:
-            pass
-        
         # Signal when the very first frame is seen (used to avoid missing the first shared tick)
         self._first_frame_ev = threading.Event()
         
