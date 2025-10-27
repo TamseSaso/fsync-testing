@@ -43,6 +43,16 @@ class SharedTicker:
                 self._cond.wait()
             return self._tick_idx
 
+    def scheduled_time(self, tick_idx: int) -> float:
+        """Return the nominal fire time for tick_idx in the same timebase
+        as time.monotonic(). Tick #1 is exactly at _start_time, so use
+        (_start_time + (tick_idx - 1) * period).
+        """
+        with self._cond:
+            if self._start_time is None or tick_idx <= 0:
+                return float('nan')
+            return self._start_time + (float(tick_idx - 1) * self.period_sec)
+
 
 class FrameSamplingNode(dai.node.ThreadedHostNode):
     """Samples frames from input at specified intervals and forwards them to output.
@@ -178,7 +188,7 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
 
             try:
                 self.out.send(frame)
-                boundary_t = getattr(self.shared_ticker, 'scheduled_time', lambda i: float('nan'))(self._last_tick_idx)
+                boundary_t = self.shared_ticker.scheduled_time(self._last_tick_idx)
                 print(f"Frame sampled on global tick #{self._last_tick_idx} at {boundary_t:.3f}s (every {self.sample_interval:.1f}s)")
                 last_sent_idx = self._last_tick_idx
             except Exception as e:
