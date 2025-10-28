@@ -80,9 +80,9 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         # Prefer non-blocking I/O so run() can react to tick events even if no new frame arrives
         try:
             self.input.setBlocking(False)
-            self.input.setQueueSize(2)
-            self.out.setQueueSize(4)
-            self.out.setBlocking(False)
+            self.input.setQueueSize(8)
+            self.out.setQueueSize(30)
+            self.out.setBlocking(True)
         except AttributeError:
             # Some environments may not expose these on HostNode I/O; ignore if unavailable
             pass
@@ -132,6 +132,11 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                     with self.frame_lock:
                         self.latest_frame = frame_msg
                     self._first_frame_event.set()
+
+                    # Guarantee an immediate first emission once we have a frame
+                    if not self._bootstrapped and self.shared_ticker is not None:
+                        self.out.send(self.latest_frame)
+                        print("FrameSamplingNode: guaranteed first emission after first frame")
 
                     # If a global tick has been published since our last emit, push immediately
                     if self.shared_ticker is not None and self._emit_tick_idx > self._last_emitted_tick:
