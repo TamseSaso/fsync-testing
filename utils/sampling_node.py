@@ -71,10 +71,18 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         self.frame_lock = threading.Lock()
         self._bootstrapped = False
         self._target_start_slot: Optional[int] = None
+        self._first_frame_event = threading.Event()
 
     def build(self, frames: dai.Node.Output) -> "FrameSamplingNode":
         frames.link(self.input)
         return self
+
+    def wait_first_frame(self, timeout: Optional[float] = None) -> bool:
+        """
+        Block until the first frame has been received or until `timeout` seconds pass.
+        Returns True if the first frame arrived, False if the wait timed out.
+        """
+        return self._first_frame_event.wait(timeout)
 
     def run(self) -> None:
         if self.shared_ticker is not None:
@@ -95,6 +103,8 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                 if frame_msg is not None:
                     with self.frame_lock:
                         self.latest_frame = frame_msg
+                        if not self._first_frame_event.is_set():
+                            self._first_frame_event.set()
 
                 # Bootstrap: emit first frame immediately to flush any startup latency (only when using shared ticker)
                 if frame_msg is not None and not self._bootstrapped and (self.shared_ticker is not None and self.ptp_slot_period is None):
