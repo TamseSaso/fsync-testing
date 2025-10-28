@@ -72,17 +72,12 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         self._bootstrapped = False
         self._target_start_slot: Optional[int] = None
         self._first_frame_event = threading.Event()
+        self._emit_tick_idx = 0
+        self._last_emitted_tick = 0
 
     def build(self, frames: dai.Node.Output) -> "FrameSamplingNode":
         frames.link(self.input)
         return self
-
-    def wait_first_frame(self, timeout: Optional[float] = None) -> bool:
-        """
-        Block until the first frame has been received or until `timeout` seconds pass.
-        Returns True if the first frame arrived, False if the wait timed out.
-        """
-        return self._first_frame_event.wait(timeout)
 
     def run(self) -> None:
         if self.shared_ticker is not None:
@@ -103,8 +98,13 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                 if frame_msg is not None:
                     with self.frame_lock:
                         self.latest_frame = frame_msg
-                        if not self._first_frame_event.is_set():
-                            self._first_frame_event.set()
+                    self._first_frame_event.set()
+
+                    # If a global tick has been published since our last emit, push immediately
+                    if self.shared_ticker is not None and self._emit_tick_idx > self._last_emitted_tick:
+                        self.out.send(self.latest_frame)
+                        self._last_emitted_tick = self._emit_tick_idx
+                        print(f"Frame emitted on global tick #{self._last_emitted_tick} (run thread)")
 
                 # Bootstrap: emit first frame immediately to flush any startup latency (only when using shared ticker)
                 if frame_msg is not None and not self._bootstrapped and (self.shared_ticker is not None and self.ptp_slot_period is None):
@@ -129,10 +129,9 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
             # 1) Shared global ticker mode
             if self.shared_ticker is not None:
                 self._last_tick_idx = self.shared_ticker.wait_next_tick(self._last_tick_idx)
+                # Defer actual send to the run-thread to avoid cross-thread out.send()
                 with self.frame_lock:
-                    if self.latest_frame is not None:
-                        self.out.send(self.latest_frame)
-                        print(f"Frame sampled on global tick #{self._last_tick_idx} at {time.monotonic():.3f}s")
+                    self._emit_tick_idx = self._last_tick_idx
                 continue
 
             # 2) PTP-slotted mode (device timestamps aligned by PTP)
