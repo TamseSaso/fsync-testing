@@ -79,6 +79,13 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         frames.link(self.input)
         return self
 
+    def wait_first_frame(self, timeout: Optional[float] = None) -> bool:
+        """
+        Block until the first frame has been received or until `timeout` seconds pass.
+        Returns True if the first frame arrived, False if the wait timed out.
+        """
+        return self._first_frame_event.wait(timeout)
+
     def run(self) -> None:
         if self.shared_ticker is not None:
             print("FrameSamplingNode started with shared global ticker")
