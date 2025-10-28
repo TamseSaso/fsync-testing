@@ -3,7 +3,6 @@
 import contextlib
 import datetime
 import time
-import cv2
 import depthai as dai
 from utils.arguments import initialize_argparser
 from utils.apriltag_node import AprilTagAnnotationNode
