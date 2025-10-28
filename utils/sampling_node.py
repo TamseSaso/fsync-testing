@@ -75,6 +75,18 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         self._emit_tick_idx = 0
         self._last_emitted_tick = 0
 
+        # Wake the run-loop instantly on a tick so we can emit immediately
+        self._tick_event = threading.Event()
+        # Prefer non-blocking I/O so run() can react to tick events even if no new frame arrives
+        try:
+            self.input.setBlocking(False)
+            self.input.setQueueSize(2)
+            self.out.setQueueSize(4)
+            self.out.setBlocking(False)
+        except AttributeError:
+            # Some environments may not expose these on HostNode I/O; ignore if unavailable
+            pass
+
     def build(self, frames: dai.Node.Output) -> "FrameSamplingNode":
         frames.link(self.input)
         return self
@@ -101,7 +113,21 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         # Main loop: continuously update latest frame
         while self.isRunning():
             try:
-                frame_msg: dai.ImgFrame = self.input.get()
+                # If a global tick happened, emit the latest frame immediately (without waiting for a new frame)
+                if self.shared_ticker is not None and self._emit_tick_idx > self._last_emitted_tick:
+                    with self.frame_lock:
+                        frame_to_send = self.latest_frame
+                    if frame_to_send is not None:
+                        self.out.send(frame_to_send)
+                        self._last_emitted_tick = self._emit_tick_idx
+                        print(f"Frame emitted on global tick #{self._last_emitted_tick} (tick wake)")
+
+                try:
+                    frame_msg = self.input.tryGet()
+                except AttributeError:
+                    # Fallback to blocking get() if tryGet() is unavailable
+                    frame_msg: dai.ImgFrame = self.input.get()
+
                 if frame_msg is not None:
                     with self.frame_lock:
                         self.latest_frame = frame_msg
@@ -127,6 +153,12 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                         print("FrameSamplingNode bootstrap emit (first frame)")
                     finally:
                         self._bootstrapped = True
+
+                if frame_msg is None:
+                    # Sleep very briefly or until a tick wakes us
+                    self._tick_event.wait(0.01)
+                    self._tick_event.clear()
+
             except Exception as e:
                 print(f"FrameSamplingNode input error: {e}")
                 continue
@@ -139,6 +171,8 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                 # Defer actual send to the run-thread to avoid cross-thread out.send()
                 with self.frame_lock:
                     self._emit_tick_idx = self._last_tick_idx
+                # Wake run() so it can emit immediately even if no new frame arrives
+                self._tick_event.set()
                 continue
 
             # 2) PTP-slotted mode (device timestamps aligned by PTP)
