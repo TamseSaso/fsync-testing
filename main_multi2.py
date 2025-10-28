@@ -103,7 +103,7 @@ with contextlib.ExitStack() as stack:
         pipeline, out_q, node_out = createPipeline(pipeline, socket)
 
         # Sample a frame every 5 seconds from the live stream, synchronized via a shared ticker
-        sampler = FrameSamplingNode(sample_interval_seconds=5.0, shared_ticker=shared_ticker, emit_first_frame_immediately=False).build(node_out)
+        sampler = FrameSamplingNode(sample_interval_seconds=5.0, shared_ticker=shared_ticker).build(node_out)
         samplers.append(sampler)
 
         apriltag_node = AprilTagAnnotationNode(
