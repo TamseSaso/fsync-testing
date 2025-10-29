@@ -62,6 +62,23 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
             (dai.DatatypeEnum.ImgFrame, True),
         ])
 
+        # Analyzer inputs (optional). If set_queues receives Node.Output, we'll link here.
+        self._inA = self.createInput()
+        self._inA.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, True)])
+        try:
+            self._inA.setBlocking(False)
+            self._inA.setQueueSize(1)
+        except AttributeError:
+            pass
+
+        self._inB = self.createInput()
+        self._inB.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, True)])
+        try:
+            self._inB.setBlocking(False)
+            self._inB.setQueueSize(1)
+        except AttributeError:
+            pass
+
         self.grid_size = grid_size
         self.output_w, self.output_h = output_size
         self.cell_w = max(1, self.output_w // self.grid_size)
@@ -87,9 +104,17 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         return self
 
     def set_queues(self, qA, qB) -> None:
-        """Provide the two host queues that output dai.Buffer from LEDGridAnalyzer."""
-        self._qA = qA
-        self._qB = qB
+        """Wire analyzer outputs. Accepts either Node.Output (host-to-host link) or OutputQueue."""
+        # If objects have `link`, treat them as Node.Output and link into our inputs.
+        if hasattr(qA, "link") and hasattr(qB, "link"):
+            qA.link(self._inA)
+            qB.link(self._inB)
+            self._qA = None
+            self._qB = None
+        else:
+            # Assume host-side OutputQueues
+            self._qA = qA
+            self._qB = qB
 
     # --- Utility ----------------------------------------------------------
     def _parse_buffer(self, buf: dai.Buffer):
@@ -309,28 +334,59 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     _t.sleep(0.005)
                     continue
 
-                # Drain both queues to the latest elements (non-blocking preferred)
+                # Drain latest packets from either queues (if provided) or from inputs (if linked)
                 bufA: Optional[dai.Buffer] = None
                 bufB: Optional[dai.Buffer] = None
-                try:
-                    while True:
-                        m = getattr(self._qA, "tryGet", None)
-                        m = m() if m is not None else self._qA.get()  # tryGet() if exists, else blocking get()
-                        if m is None:
-                            break
-                        bufA = m
-                except Exception:
-                    bufA = None
 
-                try:
-                    while True:
-                        m = getattr(self._qB, "tryGet", None)
-                        m = m() if m is not None else self._qB.get()
-                        if m is None:
-                            break
-                        bufB = m
-                except Exception:
-                    bufB = None
+                if self._qA is not None:
+                    try:
+                        while True:
+                            m = getattr(self._qA, "tryGet", None)
+                            m = m() if m is not None else self._qA.get()
+                            if m is None:
+                                break
+                            bufA = m
+                    except Exception:
+                        bufA = None
+                else:
+                    try:
+                        while True:
+                            try:
+                                m = self._inA.tryGet()
+                            except AttributeError:
+                                if not self._inA.has():
+                                    break
+                                m = self._inA.get()
+                            if m is None:
+                                break
+                            bufA = m
+                    except Exception:
+                        bufA = None
+
+                if self._qB is not None:
+                    try:
+                        while True:
+                            m = getattr(self._qB, "tryGet", None)
+                            m = m() if m is not None else self._qB.get()
+                            if m is None:
+                                break
+                            bufB = m
+                    except Exception:
+                        bufB = None
+                else:
+                    try:
+                        while True:
+                            try:
+                                m = self._inB.tryGet()
+                            except AttributeError:
+                                if not self._inB.has():
+                                    break
+                                m = self._inB.get()
+                            if m is None:
+                                break
+                            bufB = m
+                    except Exception:
+                        bufB = None
 
                 # Parse incoming packets and update last states
                 parsedA = parsedB = False
