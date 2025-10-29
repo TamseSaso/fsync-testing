@@ -219,7 +219,47 @@ class FrameSamplingNode:
                 return True
             except Exception:
                 pass
-        # 3) Queue-like interface: poll tryGet()/get() in a tiny thread
+        # 3) DepthAI Node Output: create a host queue and poll it
+        if hasattr(upstream, "createOutputQueue"):
+            try:
+                oq = upstream.createOutputQueue(maxSize=4, blocking=False)
+            except TypeError:
+                # Older/newer API variants may be positional-only
+                try:
+                    oq = upstream.createOutputQueue(4, False)
+                except Exception:
+                    oq = None
+            except Exception:
+                oq = None
+            if oq is not None:
+                def _poll_q():
+                    while not self._pull_stop.is_set():
+                        msg = None
+                        try:
+                            if hasattr(oq, "tryGet"):
+                                msg = oq.tryGet()
+                            else:
+                                try:
+                                    msg = oq.get(timeout=0.05)
+                                except TypeError:
+                                    try:
+                                        msg = oq.get()
+                                    except Exception:
+                                        msg = None
+                        except Exception:
+                            msg = None
+                        if msg is not None:
+                            try:
+                                on_frame(msg)
+                            except Exception:
+                                pass
+                        else:
+                            time.sleep(0.005)
+                self._pull_stop.clear()
+                self._pull_thread = threading.Thread(target=_poll_q, name="FSN-PollQ", daemon=True)
+                self._pull_thread.start()
+                return True
+        # 4) Queue-like interface: poll tryGet()/get() in a tiny thread
         if hasattr(upstream, "tryGet") or hasattr(upstream, "get"):
             def _poll():
                 # Small sleep to avoid a busy loop; daemon thread exits with process.
@@ -251,7 +291,7 @@ class FrameSamplingNode:
             self._pull_thread = threading.Thread(target=_poll, name="FSN-Poll", daemon=True)
             self._pull_thread.start()
             return True
-        # 4) Look for common host-bridge helpers on custom wrappers
+        # 5) Look for common host-bridge helpers on custom wrappers
         for name in ("asHostStream", "toHostStream", "asHost", "hostStream"):
             if hasattr(upstream, name):
                 try:
