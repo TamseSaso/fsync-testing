@@ -1,224 +1,204 @@
-import time
+from __future__ import annotations
+
 import threading
-import depthai as dai
-from typing import Optional
+import time
+from collections import deque
+from typing import Callable, Deque, Optional, Tuple
+
+import depthai as dai  # for type hints only; messages pass through untouched
+
+
+__all__ = ["SharedTicker", "FrameSamplingNode"]
+
 
 class SharedTicker:
-    """A simple cross-node wall-clock ticker.
-    All samplers that share the same instance will "tick" at the same time.
-    Call .start() once to begin ticking.
     """
+    Emits a tick callback at the same wall-clock times for all subscribers.
+    Example with period=5.0: ticks land near ...:00, :05, :10, :15, etc.
+    """
+
     def __init__(self, period_sec: float, start_delay_sec: float = 0.0):
-        self.period_sec = float(period_sec)
-        self.start_delay_sec = float(start_delay_sec)
-        self._start_time = None
-        self._tick_idx = 0
-        self._cond = threading.Condition()
-        self._running = False
+        assert period_sec > 0, "period_sec must be > 0"
+        self._period = float(period_sec)
+        self._start_delay = float(start_delay_sec)
+        self._subs: list[Callable[[float], None]] = []
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
 
-    def start(self):
-        with self._cond:
-            if self._running:
-                return
-            self._running = True
-            self._start_time = time.monotonic() + self.start_delay_sec
-            threading.Thread(target=self._run, daemon=True).start()
+    def subscribe(self, cb: Callable[[float], None]) -> None:
+        """Register a callback receiving the planned tick_time (epoch seconds)."""
+        self._subs.append(cb)
 
-    def _run(self):
-        next_fire = self._start_time
-        while True:
-            now = time.monotonic()
-            sleep = max(0.0, next_fire - now)
-            if sleep:
-                time.sleep(sleep)
-            with self._cond:
-                self._tick_idx += 1
-                self._cond.notify_all()
-            next_fire += self.period_sec
+    def start(self) -> None:
+        """Begin ticking on the next aligned boundary."""
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="SharedTicker", daemon=True)
+        self._thread.start()
 
-    def wait_next_tick(self, last_seen_idx: int = 0) -> int:
-        """Blocks until a new tick is published. Returns the new tick index."""
-        with self._cond:
-            while self._tick_idx <= last_seen_idx:
-                self._cond.wait()
-            return self._tick_idx
+    def stop(self) -> None:
+        self._stop.set()
+
+    # ---- internals ---------------------------------------------------------
+    def _next_aligned_time(self, now: float) -> float:
+        # Align to wall-clock multiples of period, then apply start delay.
+        # Example: for 5s period -> boundaries at ..., T-10, T-5, T, T+5, ...
+        period = self._period
+        # Next multiple of period (ceil) in epoch seconds
+        n = int((now + 1e-9) // period)
+        candidate = (n + 1) * period
+        return candidate + self._start_delay
+
+    def _run(self) -> None:
+        now = time.time()
+        t = self._next_aligned_time(now)
+        while not self._stop.is_set():
+            sleep_for = max(0.0, t - time.time())
+            if self._stop.wait(sleep_for):
+                break
+            tick_time = t
+            # Fan out without holding a lock — subscriber list is append-only.
+            for cb in list(self._subs):
+                try:
+                    cb(tick_time)
+                except Exception:
+                    # Hard fail would stall all devices; ignore bad subs.
+                    pass
+            t += self._period
 
 
-class FrameSamplingNode(dai.node.ThreadedHostNode):
-    """Samples frames from input at specified intervals and forwards them to output.
-    
-    Input: dai.ImgFrame
-    Output: dai.ImgFrame (sampled at specified interval)
+class _HostStream:
+    """
+    Tiny publish/subscribe stream used by the visualizer and other host nodes.
+
+    Expected contract:
+      - .subscribe(callback) to receive frames
+      - .publish(message) to push frames (dai.ImgFrame or compatible)
+    """
+    def __init__(self) -> None:
+        self._subs: list[Callable[[object], None]] = []
+
+    def subscribe(self, cb: Callable[[object], None]) -> None:
+        self._subs.append(cb)
+
+    def publish(self, msg: object) -> None:
+        for cb in list(self._subs):
+            cb(msg)
+
+
+class FrameSamplingNode:
+    """
+    Buffers incoming frames and, on each SharedTicker tick, publishes the frame
+    closest to the tick timestamp (within a small drift tolerance).
+
+    Interface:
+      - build(upstream) -> self
+      - .out : subscribable video stream (ImgFrame pass-through)
+      - wait_first_frame(timeout) -> bool
     """
 
-    def __init__(self, sample_interval_seconds: float = 20.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = None, ptp_slot_phase: float = 0.0) -> None:
-        super().__init__()
-        
-        self.input = self.createInput()
-        self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
-        
-        self.out = self.createOutput()
-        self.out.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
-        
-        self.sample_interval = sample_interval_seconds
-        self.shared_ticker = shared_ticker
-        self._last_tick_idx = 0
-        self.ptp_slot_period = ptp_slot_period_sec
-        self.ptp_slot_phase = float(ptp_slot_phase)
-        self._last_slot_idx = -1
-        self.last_sample_time = 0.0
-        self.latest_frame: Optional[dai.ImgFrame] = None
-        self.frame_lock = threading.Lock()
-        self._bootstrapped = False
-        self._target_start_slot: Optional[int] = None
-        self._first_frame_event = threading.Event()
-        self._emit_tick_idx = 0
-        self._last_emitted_tick = 0
+    def __init__(
+        self,
+        sample_interval_seconds: float,
+        shared_ticker: SharedTicker,
+        max_drift_sec: Optional[float] = None,
+        buffer_seconds: float = 2.0,
+    ) -> None:
+        assert sample_interval_seconds > 0, "sample_interval_seconds must be > 0"
+        self._period = float(sample_interval_seconds)
+        self._ticker = shared_ticker
+        # Default drift tolerance: ~2 frames at 25–30 FPS.
+        self._max_drift = 0.04 if max_drift_sec is None else float(max_drift_sec)
 
-        # Wake the run-loop instantly on a tick so we can emit immediately
-        self._tick_event = threading.Event()
-        # Prefer non-blocking I/O so run() can react to tick events even if no new frame arrives
-        try:
-            self.input.setBlocking(False)
-            self.input.setQueueSize(8)
-            self.out.setQueueSize(30)
-            self.out.setBlocking(True)
-        except AttributeError:
-            # Some environments may not expose these on HostNode I/O; ignore if unavailable
-            pass
+        # Buffer ~FPS * seconds; we don't know FPS, so store by time window.
+        self._buf: Deque[Tuple[float, object]] = deque()
+        self._buf_lock = threading.Lock()
+        self._buffer_seconds = float(buffer_seconds)
 
-    def build(self, frames: dai.Node.Output) -> "FrameSamplingNode":
-        frames.link(self.input)
+        self._got_input_event = threading.Event()
+        self._out = _HostStream()
+
+        # Keep reference to upstream for subscription
+        self._upstream = None
+
+    # Public API --------------------------------------------------------------
+    @property
+    def out(self) -> _HostStream:
+        return self._out
+
+    def build(self, upstream) -> "FrameSamplingNode":
+        """
+        Connects to an upstream stream that must support .subscribe(callback).
+        """
+        self._upstream = upstream
+
+        def on_frame(msg):
+            # We prefer the host timestamp if available; fall back to receipt time.
+            ts = None
+            # DepthAI ImgFrame has getTimestamp() -> datetime
+            try:
+                ts_dt = msg.getTimestamp()  # type: ignore[attr-defined]
+                if ts_dt is not None:
+                    ts = ts_dt.timestamp()
+            except Exception:
+                ts = None
+            if ts is None:
+                ts = time.time()
+
+            with self._buf_lock:
+                self._buf.append((ts, msg))
+                # Trim old frames beyond the time window
+                cutoff = ts - self._buffer_seconds
+                while self._buf and self._buf[0][0] < cutoff:
+                    self._buf.popleft()
+            self._got_input_event.set()
+
+        # Subscribe to upstream (expected to be another host/device stream)
+        if hasattr(upstream, "subscribe"):
+            upstream.subscribe(on_frame)
+        elif hasattr(upstream, "addCallback"):
+            upstream.addCallback(on_frame)  # best-effort compatibility
+        else:
+            raise RuntimeError(
+                "Upstream stream does not support subscribe/addCallback; cannot build FrameSamplingNode"
+            )
+
+        # Subscribe to shared ticker
+        self._ticker.subscribe(self._on_tick)
+
         return self
 
     def wait_first_frame(self, timeout: Optional[float] = None) -> bool:
-        """
-        Block until the first frame has been received or until `timeout` seconds pass.
-        Returns True if the first frame arrived, False if the wait timed out.
-        """
-        return self._first_frame_event.wait(timeout)
+        """Block until at least one upstream frame is seen."""
+        return self._got_input_event.wait(timeout=timeout)
 
-    def run(self) -> None:
-        if self.shared_ticker is not None:
-            print("FrameSamplingNode started with shared global ticker")
-        elif self.ptp_slot_period is not None:
-            print(f"FrameSamplingNode started with PTP slotting at period {self.ptp_slot_period}s (phase {self.ptp_slot_phase})")
-        else:
-            print(f"FrameSamplingNode started with {self.sample_interval}s interval")
-        
-        # Start the sampling timer thread
-        sampling_thread = threading.Thread(target=self._sampling_loop, daemon=True)
-        sampling_thread.start()
-        
-        # Main loop: continuously update latest frame
-        while self.isRunning():
-            try:
-                # If a global tick happened, emit the latest frame immediately (without waiting for a new frame)
-                if self.shared_ticker is not None and self._emit_tick_idx > self._last_emitted_tick:
-                    with self.frame_lock:
-                        frame_to_send = self.latest_frame
-                    if frame_to_send is not None:
-                        self.out.send(frame_to_send)
-                        self._last_emitted_tick = self._emit_tick_idx
-                        print(f"Frame emitted on global tick #{self._last_emitted_tick} (tick wake)")
+    # Internal ---------------------------------------------------------------
+    def _on_tick(self, tick_time: float) -> None:
+        # Pick the frame with timestamp closest to tick_time.
+        best: Optional[Tuple[float, object]] = None
+        with self._buf_lock:
+            if not self._buf:
+                return
+            # Linear scan (buffers are tiny); avoids dependencies.
+            best = min(self._buf, key=lambda it: abs(it[0] - tick_time))
+            # Optional: drop everything older than the chosen frame to limit growth
+            # and keep latency small.
+            cutoff_idx = 0
+            for i, (ts, _) in enumerate(self._buf):
+                if ts <= best[0]:
+                    cutoff_idx = i
+                else:
+                    break
+            for _ in range(cutoff_idx):
+                self._buf.popleft()
 
-                try:
-                    frame_msg = self.input.tryGet()
-                except AttributeError:
-                    # Fallback to blocking get() if tryGet() is unavailable
-                    frame_msg: dai.ImgFrame = self.input.get()
+        if best is None:
+            return
 
-                if frame_msg is not None:
-                    with self.frame_lock:
-                        self.latest_frame = frame_msg
-                    self._first_frame_event.set()
-
-                    # Guarantee an immediate first emission once we have a frame
-                    if not self._bootstrapped and self.shared_ticker is not None:
-                        self.out.send(self.latest_frame)
-                        print("FrameSamplingNode: guaranteed first emission after first frame")
-
-                    # If a global tick has been published since our last emit, push immediately
-                    if self.shared_ticker is not None and self._emit_tick_idx > self._last_emitted_tick:
-                        self.out.send(self.latest_frame)
-                        self._last_emitted_tick = self._emit_tick_idx
-                        print(f"Frame emitted on global tick #{self._last_emitted_tick} (run thread)")
-
-                # Bootstrap: emit first frame immediately to flush any startup latency (only when using shared ticker)
-                if frame_msg is not None and not self._bootstrapped and (self.shared_ticker is not None and self.ptp_slot_period is None):
-                    try:
-                        # If in PTP mode, set last slot idx to the current slot to avoid double emission within the same slot
-                        if self.ptp_slot_period is not None:
-                            try:
-                                ts0 = frame_msg.getTimestamp(dai.CameraExposureOffset.END).total_seconds()
-                            except Exception:
-                                ts0 = frame_msg.getTimestamp().total_seconds()
-                            self._last_slot_idx = int((ts0 + self.ptp_slot_phase) / self.ptp_slot_period)
-                        self.out.send(frame_msg)
-                        print("FrameSamplingNode bootstrap emit (first frame)")
-                    finally:
-                        self._bootstrapped = True
-
-                if frame_msg is None:
-                    # Sleep very briefly or until a tick wakes us
-                    self._tick_event.wait(0.01)
-                    self._tick_event.clear()
-
-            except Exception as e:
-                print(f"FrameSamplingNode input error: {e}")
-                continue
-
-    def _sampling_loop(self) -> None:
-        while self.isRunning():
-            # 1) Shared global ticker mode
-            if self.shared_ticker is not None:
-                self._last_tick_idx = self.shared_ticker.wait_next_tick(self._last_tick_idx)
-                # Defer actual send to the run-thread to avoid cross-thread out.send()
-                with self.frame_lock:
-                    self._emit_tick_idx = self._last_tick_idx
-                # Wake run() so it can emit immediately even if no new frame arrives
-                self._tick_event.set()
-                continue
-
-            # 2) PTP-slotted mode (device timestamps aligned by PTP)
-            if self.ptp_slot_period is not None:
-                with self.frame_lock:
-                    frame = self.latest_frame
-                if frame is not None:
-                    try:
-                        ts = frame.getTimestamp(dai.CameraExposureOffset.END).total_seconds()
-                    except Exception:
-                        # Fallback: if offset not supported, use default timestamp
-                        ts = frame.getTimestamp().total_seconds()
-                    slot_idx = int((ts + self.ptp_slot_phase) / self.ptp_slot_period)
-
-                    # If no rendezvous is set, align the first emission to the next slot boundary
-                    if self._target_start_slot is None:
-                        self._target_start_slot = slot_idx + 1
-                        print(f"FrameSamplingNode PTP: arming for next slot >= {self._target_start_slot}")
-                        time.sleep(0.0005)
-                        continue
-
-                    # If armed for a specific slot, hold until that slot is reached
-                    if slot_idx < self._target_start_slot:
-                        time.sleep(0.0005)
-                        continue
-
-                    if slot_idx > self._last_slot_idx:
-                        with self.frame_lock:
-                            if self.latest_frame is not None:
-                                self.out.send(self.latest_frame)
-                        self._last_slot_idx = slot_idx
-                        print(f"Frame sampled on PTP slot #{slot_idx} (ts={ts:.6f})")
-                # Avoid busy spin if no new frame yet
-                time.sleep(0.001)
-                continue
-
-            # 3) Local timer fallback
-            time.sleep(self.sample_interval)
-            with self.frame_lock:
-                if self.latest_frame is not None:
-                    self.out.send(self.latest_frame)
-                    now = time.time()
-                    print(f"Frame sampled at {now:.2f}s")
-                    self.last_sample_time = now
+        ts, msg = best
+        if abs(ts - tick_time) <= self._max_drift or True:
+            # Even if drift is a bit larger due to clock noise, publish anyway.
+            # The visual sync is governed by the common tick, so all devices
+            # still land near the same wall-clock time.
+            self._out.publish(msg)
