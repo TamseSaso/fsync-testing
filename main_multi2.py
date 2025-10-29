@@ -138,26 +138,27 @@ with contextlib.ExitStack() as stack:
         device_ids.append(deviceInfo.getXLinkDeviceDesc().name)
 
 
+    # Register comparison topics before starting pipelines (required by RemoteConnection)
+    if len(analyzers) >= 2:
+        # Use the first warped stream as a lightweight tick source to schedule the comparison node
+        led_cmp = LEDGridComparison(grid_size=32, output_size=(1024, 1024)).build(warp_nodes[0].out)
+        comparisons.append(led_cmp)
+        # Feed analyzer outputs to the comparison node (queues will be realized once pipelines start)
+        led_cmp.set_queues(analyzers[0].out, analyzers[1].out)
+        # Display both the overlay and a compact textual report
+        visualizer.addTopic("LED Sync Overlay", led_cmp.out_overlay, "images")
+        visualizer.addTopic("LED Sync Report", led_cmp.out_report, "images")
+
+    # Register pipelines with the visualizer before starting them, so topics can be created.
     for p in pipelines:
-        p.start()
         visualizer.registerPipeline(p)
+        p.start()
 
     # Wait until every sampler has received at least one frame, then start the global ticker
     for s in samplers:
         s.wait_first_frame(timeout=None)
     shared_ticker.start()
 
-    # Register comparison topics after pipelines and ticker are running,
-    # so analyzer output queues are initialized and producing.
-    if len(analyzers) >= 2:
-        # Use the first warped stream as a lightweight tick source to schedule the comparison node
-        led_cmp = LEDGridComparison(grid_size=32, output_size=(1024, 1024)).build(warp_nodes[0].out)
-        comparisons.append(led_cmp)
-        # Feed analyzer outputs to the comparison node
-        led_cmp.set_queues(analyzers[0].out, analyzers[1].out)
-        # Display both the overlay and a compact textual report
-        visualizer.addTopic("LED Sync Overlay", led_cmp.out_overlay, "images")
-        visualizer.addTopic("LED Sync Report", led_cmp.out_report, "images")
 
     # Visualizer drives display and sync; no host queue consumption here
     while True:
