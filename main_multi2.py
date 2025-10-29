@@ -71,7 +71,7 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
     # No host output queue here; host nodes consume the stream
     output = None
     if SET_MANUAL_EXPOSURE:
-        camRgb.initialControl.setManualExposure(6000, 200)
+        camRgb.initialControl.setManualExposure(6000, 100)
     # Backwards-compatible return plus node output for visualizer usage
     return pipeline, output, node_out
 
@@ -123,7 +123,6 @@ with contextlib.ExitStack() as stack:
         led_visualizer = LEDGridVisualizer(output_size=(1024, 1024)).build(led_analyzer.out)
 
         suffix = f" [{device.getDeviceId()}]"
-        visualizer.addTopic("Warped Sample" + suffix, warp_node.out, "images")
         visualizer.addTopic("LED Grid" + suffix, led_visualizer.out, "images")
 
         pipeline.start()
