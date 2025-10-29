@@ -7,6 +7,8 @@ import depthai as dai
 from utils.arguments import initialize_argparser
 from utils.sampling_node import FrameSamplingNode, SharedTicker
 from utils.apriltag_warp_node import AprilTagWarpNode
+from utils.led_grid_analyzer import LEDGridAnalyzer
+from utils.led_grid_visualizer import LEDGridVisualizer
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -115,8 +117,15 @@ with contextlib.ExitStack() as stack:
             z_offset=args.z_offset,
         ).build(sampler.out)
 
+        # LED grid analysis from sampled frames, then visualize as an image
+        led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.3).build(sampler.out)
+        analyzer_out = led_analyzer.out  # Defer queue creation until after pipeline is started
+        led_visualizer = LEDGridVisualizer(output_size=(1024, 1024)).build(led_analyzer.out)
+
         suffix = f" [{device.getDeviceId()}]"
         visualizer.addTopic("Warped Sample" + suffix, warp_node.out, "images")
+        visualizer.addTopic("LED Grid" + suffix, led_visualizer.out, "images")
+
         pipeline.start()
         visualizer.registerPipeline(pipeline)
 
