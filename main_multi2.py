@@ -118,7 +118,7 @@ with contextlib.ExitStack() as stack:
         ).build(sampler.out)
 
         # LED grid analysis from sampled frames, then visualize as an image
-        led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.3).build(warp_node.out)
+        led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.7).build(warp_node.out)
         analyzer_out = led_analyzer.out  # Defer queue creation until after pipeline is started
         led_visualizer = LEDGridVisualizer(output_size=(1024, 1024)).build(led_analyzer.out)
 
