@@ -191,7 +191,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         put(34, "LED Sync Report", (255, 255, 0))
         put(90, f"Waiting for stream {missing_side}…", (0, 165, 255))
         if avail_speed is not None and avail_intervals is not None:
-            put(140, f"Seen config on other side → Speed={avail_speed}, Intervals=0b{avail_intervals:016b}")
+            put(140, f"Seen config on other side → Speed={avail_speed}, Intervals={int(avail_intervals) if avail_intervals is not None else '—'}")
         put(190, "Comparison paused until both streams are available.")
         return img
 
@@ -259,44 +259,65 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         passed: Optional[bool],
         passed_by_time: bool = False,
     ) -> np.ndarray:
-        w, h = 1024, 240
-        img = np.zeros((h, w, 3), dtype=np.uint8)
+        # Canvas
+        W, H = 1024, 240
+        img = np.zeros((H, W, 3), dtype=np.uint8)
+        img[:] = (18, 18, 18)
 
-        def put(y, text, color=(255, 255, 255), scale=0.7, thick=2):
-            cv2.putText(img, text, (16, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
+        # Helpers
+        def put(x, y, text, color=(230, 230, 230), scale=0.8, thick=2):
+            cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
 
-        # Titles
-        put(30, "LED Sync Report", (255, 255, 0))
+        def row(y, label, value, value_color=(255, 255, 255)):
+            put(16, y, label, (180, 180, 180))
+            put(260, y, value, value_color)
+
+        # Header
+        put(16, 32, "LED Sync Report", (255, 255, 0), 0.95, 2)
+        cv2.line(img, (16, 40), (W - 16, 40), (70, 70, 70), 1)
 
         # Config
         cfg_str = f"Speed={speed}, Intervals={int(intervals)}"
-        # Constants for report
-        num_leds_no_config = self.grid_size * (self.grid_size - 1)
-        put(55, f"LEDs considered (no config row) = {num_leds_no_config} | Period = {int(self.led_period_us)} us", (200, 200, 200))
         if cfg_ok:
-            put(80, f"Config check ({cfg_str}) -> MATCH", (0, 255, 0))
+            row(68, "Config:", cfg_str + "  -> MATCH", (0, 255, 0))
         else:
-            put(80, f"Config check ({cfg_str}) -> MISMATCH", (0, 165, 255))
-            put(100, "Skipping LED placement comparison due to config mismatch.", (0, 165, 255))
+            row(68, "Config:", cfg_str + "  -> MISMATCH", (0, 165, 255))
+            row(92, "Note:", "Skipping placement comparison due to config mismatch.", (0, 165, 255))
 
-        # Timing / shift
-        put(110, f"dT ~ {dt_us_abs} us   |   Column shift ~ {shift_cols}")
-        put(127, f"Intervals offset (int) ~ {intervals_offset}  ({lead_text})")
-        dt_seconds = intervals_offset_real * (self.led_period_us / 1e6)
-        put(145, f"Shift: {shift_cols_real:+.3f} cols   (int {shift_cols})   |   Intervals: int={intervals_offset}, real={intervals_offset_real:.3f}")
+        # Timing block
+        dt_ms = dt_us_abs / 1000.0
+        row(118, "Timing:", f"dT = {dt_us_abs:,} us  ({dt_ms:.3f} ms)")
+        row(142, "Shift:", f"{shift_cols_real:+.3f} cols   (int {shift_cols})   |   Intervals: int={intervals_offset}, real={intervals_offset_real:.3f}")
+        row(166, "Lead/Lag:", lead_text)
 
-        # Metrics
-        put(175, f"ON A={onA}, ON B={onB}, Overlap={overlap}")
-        put(200, f"RecallA={recallA:.3f}, RecallB={recallB:.3f}, IoU={iou:.3f}")
+        # Metrics block (excludes config row)
+        row(190, "Metrics:", f"onA={onA}, onB={onB}, overlap={overlap}  |  recallA={recallA:.3f}, recallB={recallB:.3f}, IoU={iou:.3f}")
+
+        # Verdict banner
         if passed is None:
-            put(230, "Verdict: N/A (config mismatch)", (0, 165, 255), scale=0.9)
+            banner_text = "VERDICT: N/A (config mismatch)"
+            banner_color = (0, 165, 255)
+            sub_text = ""
         else:
-            verdict = "PASS" if passed else "FAIL"
-            color = (0, 255, 0) if passed else (0, 0, 255)
-            if passed_by_time and self.sync_threshold_sec is not None:
-                put(230, f"Verdict: {verdict}  (time Δt ≤ {self.sync_threshold_sec:.3f}s)", color, scale=0.9)
+            if passed:
+                banner_text = "VERDICT: PASS"
+                banner_color = (0, 180, 0)
+                if passed_by_time and self.sync_threshold_sec is not None:
+                    sub_text = f"time threshold: dT <= {self.sync_threshold_sec:.3f}s"
+                else:
+                    sub_text = f"recall threshold: min(recallA, recallB) >= {self.pass_ratio:.0%}"
             else:
-                put(230, f"Verdict: {verdict}  (threshold {self.pass_ratio:.0%} on both recalls)", color, scale=0.9)
+                banner_text = "VERDICT: FAIL"
+                banner_color = (0, 0, 220)
+                sub_text = f"recall threshold not met ({self.pass_ratio:.0%})"
+
+        # Draw banner as a rounded rectangle substitute
+        x1, y1, x2, y2 = 16, H - 44, W - 16, H - 12
+        cv2.rectangle(img, (x1, y1), (x2, y2), banner_color, -1)
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 0), 1)
+        put(26, H - 20, banner_text, (255, 255, 255), 0.8, 2)
+        if sub_text:
+            put(330, H - 20, f"({sub_text})", (240, 240, 240), 0.7, 2)
 
         return img
 
