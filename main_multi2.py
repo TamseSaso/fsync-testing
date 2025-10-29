@@ -133,6 +133,7 @@ with contextlib.ExitStack() as stack:
         analyzers.append(led_analyzer)
 
         suffix = f" [{device.getDeviceId()}]"
+        visualizer.addTopic("Sample" + suffix, sampler.out, "images")
         visualizer.addTopic("LED Grid" + suffix, led_visualizer.out, "images")
         visualizer.addTopic("Warped Sample" + suffix, warp_node.out, "images")
 
