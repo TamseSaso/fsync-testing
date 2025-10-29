@@ -196,6 +196,29 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         return img
 
     # --- Visualization ----------------------------------------------------
+
+    def _active_index(self, mask_full: np.ndarray):
+        """Return (idx_int, idx_real) along the raster scan (row-major),
+        excluding the bottom config row. If no ON cells, return None.
+        idx spans [0, (grid_size-1)*grid_size - 1]."""
+        if mask_full.ndim != 2:
+            return None
+        if mask_full.shape[0] < 2 or mask_full.shape[1] < 1:
+            return None
+        eval_mask = mask_full[:-1, :]  # exclude bottom config row
+        ys, xs = np.nonzero(eval_mask)
+        if ys.size == 0:
+            return None
+        # centroid for robustness (handles slight blurs or multiple pixels)
+        r_mean = float(ys.mean())
+        c_mean = float(xs.mean())
+        W = self.grid_size
+        H = self.grid_size - 1
+        N = W * H
+        idx_real = r_mean * W + c_mean
+        idx_int = int(round(idx_real))
+        idx_int = max(0, min(idx_int, N - 1))
+        return idx_int, float(idx_real)
     def _draw_overlay(self, maskA: np.ndarray, maskB: np.ndarray) -> np.ndarray:
         """
         Color code per cell:
@@ -247,6 +270,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         dt_us_abs: int,
         shift_cols: int,
         shift_cols_real: float,
+        squares_forward_int: int,
+        squares_forward_real: float,
         intervals_offset: int,
         intervals_offset_real: float,
         lead_text: str,
@@ -287,7 +312,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         # Timing block
         dt_ms = dt_us_abs / 1000.0
         row(118, "Timing:", f"dT = {dt_us_abs:,} us  ({dt_ms:.3f} ms)")
-        row(142, "Shift:", f"{shift_cols_real:+.3f} cols   (int {shift_cols})   |   Intervals: int={intervals_offset}, real={intervals_offset_real:.3f}")
+        row(142, "Shift:", f"{squares_forward_real:.3f} squares A→B  (int {squares_forward_int})   |   cols: {shift_cols_real:+.3f} (int {shift_cols})   |   Intervals: int={intervals_offset}, real={intervals_offset_real:.3f}")
         row(166, "Lead/Lag:", lead_text)
 
         # Metrics block (excludes config row)
@@ -475,6 +500,22 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 maskA_full = self._mask_from_grid(gridA, thrA)
                 maskB_full = self._mask_from_grid(gridB, thrB)
 
+                # Squares-based shift (how many squares between lights along scan path A→B)
+                idxA = self._active_index(maskA_full)
+                idxB = self._active_index(maskB_full)
+                W = self.grid_size
+                H = self.grid_size - 1
+                N = W * H
+                if idxA is not None and idxB is not None and N > 0:
+                    idxA_int, idxA_real = idxA
+                    idxB_int, idxB_real = idxB
+                    # forward difference along raster (wrap-around in [0, N))
+                    squares_forward_real = (idxB_real - idxA_real) % N
+                    squares_forward_int = int(round(squares_forward_real)) % N
+                else:
+                    squares_forward_real = 0.0
+                    squares_forward_int = 0
+
                 # --- Timestamp-based timing (fallback) and degenerate detection ---
                 # Exclude bottom config row for activity check
                 _A_eval = maskA_full[:-1, :]
@@ -554,6 +595,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                         dt_us_abs=dt_us_abs,
                         shift_cols=abs(shift_cols_signed),
                         shift_cols_real=shift_cols_real,
+                        squares_forward_int=squares_forward_int,
+                        squares_forward_real=squares_forward_real,
                         intervals_offset=intervals_offset,
                         intervals_offset_real=intervals_offset_real,
                         lead_text=lead_text + (" (from TS)" if not use_iou_alignment else ""),
@@ -591,6 +634,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     dt_us_abs=dt_us_abs,
                     shift_cols=abs(shift_cols_signed),
                     shift_cols_real=shift_cols_real,
+                    squares_forward_int=squares_forward_int,
+                    squares_forward_real=squares_forward_real,
                     intervals_offset=intervals_offset,
                     intervals_offset_real=intervals_offset_real,
                     lead_text=lead_text,
