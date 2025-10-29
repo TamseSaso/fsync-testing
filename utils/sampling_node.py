@@ -17,13 +17,14 @@ class SharedTicker:
     Example with period=5.0: ticks land near ...:00, :05, :10, :15, etc.
     """
 
-    def __init__(self, period_sec: float, start_delay_sec: float = 0.0):
+    def __init__(self, period_sec: float, start_delay_sec: float = 0.0, fast_start: bool = True):
         assert period_sec > 0, "period_sec must be > 0"
         self._period = float(period_sec)
         self._start_delay = float(start_delay_sec)
         self._subs: list[Callable[[float], None]] = []
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._fast_start = bool(fast_start)
 
     def subscribe(self, cb: Callable[[float], None]) -> None:
         """Register a callback receiving the planned tick_time (epoch seconds)."""
@@ -51,21 +52,46 @@ class SharedTicker:
         return candidate + self._start_delay
 
     def _run(self) -> None:
-        now = time.time()
-        t = self._next_aligned_time(now)
+        # Compute first aligned wall-clock tick
+        next_wall = self._next_aligned_time(time.time())
+
+        # Optional: emit a priming tick immediately so the first sample shows up
+        # right away (still synchronized across all subscribers because it's the
+        # same shared ticker instance).
+        if self._fast_start:
+            tick_now = time.time()
+            for cb in list(self._subs):
+                try:
+                    cb(tick_now)
+                except Exception:
+                    # Never let a bad subscriber stall the ticker
+                    pass
+
+        # Main loop: wait for the aligned boundary using monotonic deadlines
+        # so NTP/RTC wall-clock adjustments don't create multi-minute delays.
         while not self._stop.is_set():
-            sleep_for = max(0.0, t - time.time())
-            if self._stop.wait(sleep_for):
+            remaining = max(0.0, next_wall - time.time())
+            deadline_mono = time.monotonic() + remaining
+
+            # Sleep in short chunks so .stop() is responsive and we tolerate
+            # spurious wakeups or time adjustments.
+            while not self._stop.is_set():
+                to_wait = deadline_mono - time.monotonic()
+                if to_wait <= 0:
+                    break
+                self._stop.wait(min(0.2, max(0.0, to_wait)))
+
+            if self._stop.is_set():
                 break
-            tick_time = t
-            # Fan out without holding a lock — subscriber list is append-only.
+
+            tick_time = next_wall
             for cb in list(self._subs):
                 try:
                     cb(tick_time)
                 except Exception:
-                    # Hard fail would stall all devices; ignore bad subs.
                     pass
-            t += self._period
+
+            next_wall += self._period
 
 
 class _HostStream:
