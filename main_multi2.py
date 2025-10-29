@@ -131,6 +131,9 @@ with contextlib.ExitStack() as stack:
 
         suffix = f" [{device.getDeviceId()}]"
 
+        pipeline.start()
+        visualizer.registerPipeline(pipeline)
+
         pipelines.append(pipeline)
         queues.append(out_q)
         device_ids.append(deviceInfo.getXLinkDeviceDesc().name)
@@ -144,10 +147,6 @@ with contextlib.ExitStack() as stack:
         # Display both the overlay and a compact textual report
         visualizer.addTopic("LED Sync Overlay", led_cmp.out_overlay, "images")
         visualizer.addTopic("LED Sync Report", led_cmp.out_report, "images")
-
-    for pipeline in pipelines:
-        pipeline.start()
-        visualizer.registerPipeline(pipeline)
 
     # Wait until every sampler has received at least one frame, then start the global ticker
     for s in samplers:
