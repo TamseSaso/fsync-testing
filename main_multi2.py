@@ -148,8 +148,6 @@ with contextlib.ExitStack() as stack:
         # Use the first warped stream as a lightweight tick source to schedule the comparison node
         led_cmp = LEDGridComparison(grid_size=32, output_size=(1024, 1024)).build(warp_nodes[0].out)
         comparisons.append(led_cmp)
-        # Feed analyzer outputs to the comparison node (queues will be realized once pipelines start)
-        led_cmp.set_queues(analyzers[0].out, analyzers[1].out)
         # Display both the overlay and a compact textual report
         visualizer.addTopic("LED Sync Overlay", led_cmp.out_overlay, "images")
         visualizer.addTopic("LED Sync Report", led_cmp.out_report, "images")
@@ -160,10 +158,13 @@ with contextlib.ExitStack() as stack:
         visualizer.registerPipeline(p)
 
     # Wait until every sampler has received at least one frame, then start the global ticker
+    shared_ticker.start()
     for s in samplers:
         s.wait_first_frame(timeout=None)
-    shared_ticker.start()
 
+        # Now that analyzer outputs are live, connect them to the comparison node
+    if len(comparisons) >= 1:
+        comparisons[0].set_queues(analyzers[0].out, analyzers[1].out)
 
     # Visualizer drives display and sync; no host queue consumption here
     while True:
