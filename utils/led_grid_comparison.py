@@ -44,7 +44,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         grid_size: int = 32,
         output_size: Tuple[int, int] = (1024, 1024),
         led_period_us: float = 170.0,
-        pass_ratio: float = 0.90
+        pass_ratio: float = 0.90,
+        sync_threshold_sec: Optional[float] = None,
     ) -> None:
         super().__init__()
 
@@ -85,6 +86,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         self.cell_h = max(1, self.output_h // self.grid_size)
         self.led_period_us = float(led_period_us)
         self.pass_ratio = float(pass_ratio)
+        self.sync_threshold_sec = sync_threshold_sec
         self._last_placeholder_time = 0.0
         self._seq_counter = 1
         self._lastA = None  # (grid, avg, mult, speed, intervals, ts, seq)
@@ -254,6 +256,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         recallB: float,
         iou: float,
         passed: Optional[bool],
+        passed_by_time: bool = False,
     ) -> np.ndarray:
         w, h = 960, 240
         img = np.zeros((h, w, 3), dtype=np.uint8)
@@ -289,7 +292,10 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         else:
             verdict = "PASS" if passed else "FAIL"
             color = (0, 255, 0) if passed else (0, 0, 255)
-            put(230, f"Verdict: {verdict}  (threshold {self.pass_ratio:.0%} on both recalls)", color, scale=0.9)
+            if passed_by_time and self.sync_threshold_sec is not None:
+                put(230, f"Verdict: {verdict}  (time Δt ≤ {self.sync_threshold_sec:.3f}s)", color, scale=0.9)
+            else:
+                put(230, f"Verdict: {verdict}  (threshold {self.pass_ratio:.0%} on both recalls)", color, scale=0.9)
 
         return img
 
@@ -550,7 +556,9 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 recallB = (overlap / onB) if onB > 0 else 0.0
                 iou = (overlap / union) if union > 0 else 0.0
 
-                passed = (min(recallA, recallB) >= self.pass_ratio)
+                dt_seconds = intervals_offset_real * (self.led_period_us / 1e6)
+                time_pass = (self.sync_threshold_sec is not None and dt_seconds <= self.sync_threshold_sec)
+                passed = time_pass or (min(recallA, recallB) >= self.pass_ratio)
 
                 # Report
                 report_img = self._draw_report(
@@ -564,7 +572,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     lead_text=lead_text,
                     onA=onA, onB=onB, overlap=overlap,
                     recallA=recallA, recallB=recallB, iou=iou,
-                    passed=passed
+                    passed=passed,
+                    passed_by_time=time_pass,
                 )
                 report_frame = self._create_imgframe(report_img, tsA, max(seqA, seqB))
                 self.out_report.send(report_frame)

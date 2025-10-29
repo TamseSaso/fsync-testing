@@ -146,7 +146,7 @@ with contextlib.ExitStack() as stack:
     # Register comparison topics before starting pipelines (required by RemoteConnection)
     if len(analyzers) >= 2:
         # Use the first warped stream as a lightweight tick source to schedule the comparison node
-        led_cmp = LEDGridComparison(grid_size=32, output_size=(1024, 1024)).build(warp_nodes[0].out)
+        led_cmp = LEDGridComparison(grid_size=32, output_size=(1024, 1024), sync_threshold_sec=SYNC_THRESHOLD_SEC).build(warp_nodes[0].out)
         comparisons.append(led_cmp)
         # Display both the overlay and a compact textual report
         visualizer.addTopic("LED Sync Overlay", led_cmp.out_overlay, "images")
