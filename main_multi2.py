@@ -91,6 +91,8 @@ with contextlib.ExitStack() as stack:
     samplers = []
     analyzers = []
     warp_nodes = []
+    visualizers = []
+    comparisons = []
 
     # Create one global ticker so all devices sample at the same wall-clock time
     shared_ticker = SharedTicker(period_sec=5.0, start_delay_sec=0.3)
@@ -124,6 +126,7 @@ with contextlib.ExitStack() as stack:
         led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.7).build(warp_node.out)
         analyzer_out = led_analyzer.out  # Defer queue creation until after pipeline is started
         led_visualizer = LEDGridVisualizer(output_size=(1024, 1024)).build(led_analyzer.out)
+        visualizers.append(led_visualizer)
 
         # Collect for cross-device comparison
         warp_nodes.append(warp_node)
@@ -138,6 +141,7 @@ with contextlib.ExitStack() as stack:
     if len(analyzers) >= 2:
         # Use the first warped stream as a lightweight tick source to schedule the comparison node
         led_cmp = LEDGridComparison(grid_size=32, output_size=(1024, 1024)).build(warp_nodes[0].out)
+        comparisons.append(led_cmp)
         # Feed analyzer outputs to the comparison node
         led_cmp.set_queues(analyzers[0].out, analyzers[1].out)
         # Display both the overlay and a compact textual report
