@@ -23,6 +23,7 @@ assert len(DEVICE_INFOS) > 1, "At least two devices are required for this exampl
 # Parse CLI arguments
 _, args = initialize_argparser()
 panel_width, panel_height = map(int, args.panel_size.split(","))
+debug = False
 # ---------------------------------------------------------------------------
 # Helpers (identical to multi_devices.py)
 # ---------------------------------------------------------------------------
@@ -133,9 +134,8 @@ with contextlib.ExitStack() as stack:
         analyzers.append(led_analyzer)
 
         suffix = f" [{device.getDeviceId()}]"
-        visualizer.addTopic("Sample" + suffix, sampler.out, "images")
-        visualizer.addTopic("LED Grid" + suffix, led_visualizer.out, "images")
-        visualizer.addTopic("Warped Sample" + suffix, warp_node.out, "images")
+        if debug == True:
+            visualizer.addTopic("Sample" + suffix, sampler.out, "images")
 
         pipelines.append(pipeline)
         device_ids.append(deviceInfo.getXLinkDeviceDesc().name)
