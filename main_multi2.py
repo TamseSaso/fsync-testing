@@ -9,7 +9,7 @@ from utils.sampling_node import FrameSamplingNode, SharedTicker
 from utils.apriltag_warp_node import AprilTagWarpNode
 from utils.led_grid_analyzer import LEDGridAnalyzer
 from utils.led_grid_visualizer import LEDGridVisualizer
-from utils.led_grid_comparison import setup_visualizer_and_comparison
+from utils.led_grid_comparison import LEDGridComparison
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -79,7 +79,7 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-
+visualizer = dai.RemoteConnection(httpPort=8082)
 
 with contextlib.ExitStack() as stack:
     # deviceInfos = dai.Device.getAllAvailableDevices()
@@ -131,29 +131,28 @@ with contextlib.ExitStack() as stack:
 
         suffix = f" [{device.getDeviceId()}]"
 
+        pipeline.start()
         pipelines.append(pipeline)
         device_ids.append(deviceInfo.getXLinkDeviceDesc().name)
-
-
-    # Set up visualizer and comparison in composer using the latest warp_nodes/analyzers
-    visualizer, led_cmp = setup_visualizer_and_comparison(
-        warp_nodes=warp_nodes,
-        analyzers=analyzers,
-        grid_size=32,
-        output_size=(1024, 1024),
-        http_port=8082
-    )
-
-    # Start and register all pipelines AFTER topics are created in composer
-    for p in pipelines:
-        p.start()
-        visualizer.registerPipeline(p)
 
     # Wait until every sampler has received at least one frame, then start the global ticker
     for s in samplers:
         s.wait_first_frame(timeout=None)
     shared_ticker.start()
 
+    # Cross-device LED grid comparison (requires at least two analyzers)
+    # Create and wire this AFTER pipelines are started/registered and samplers have produced frames,
+    # so host queues/threads exist and DepthAI won't call a pure-virtual run() on an uninitialized node.
+    if len(analyzers) >= 2:
+        # Use the first warped stream as a lightweight tick source to schedule the comparison node
+        led_cmp = LEDGridComparison(grid_size=32, output_size=(1024, 1024)).build(warp_nodes[0].out)
+        # Now that pipelines are running, bind analyzer outputs (host queues exist)
+        led_cmp.set_queues(analyzers[0].out, analyzers[1].out)
+        # Display both the overlay and a compact textual report
+        visualizer.addTopic("LED Sync Overlay", led_cmp.out_overlay, "images")
+        visualizer.addTopic("LED Sync Report", led_cmp.out_report, "images")
+
+        visualizer.registerPipeline(pipeline)
 
     # Visualizer drives display and sync; no host queue consumption here
     while True:

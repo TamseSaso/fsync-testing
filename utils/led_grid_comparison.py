@@ -530,37 +530,3 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
             except Exception as e:
                 print(f"LEDGridComparison error: {e}")
                 continue
-
-def setup_visualizer_and_comparison(
-    warp_nodes,
-    analyzers,
-    grid_size: int = 32,
-    output_size=(1024, 1024),
-    http_port: int = 8082,
-):
-    """
-    Create the RemoteConnection visualizer, create & wire the LEDGridComparison, and add
-    its topics to the visualizer. Returns (visualizer, led_cmp).
-    Pipelines are NOT started here; caller should start & register them afterwards.
-    """
-    import depthai as dai
-    from .led_grid_comparison import LEDGridComparison
-
-    vis = dai.RemoteConnection(httpPort=http_port)
-
-    # If we don't yet have both analyzers, still return a visualizer so UI can come up.
-    if len(warp_nodes) == 0 or len(analyzers) < 2:
-        led_cmp = LEDGridComparison(grid_size=grid_size, output_size=output_size)
-        return vis, led_cmp
-
-    # Use the first warped stream purely as a tick to schedule the host node
-    led_cmp = LEDGridComparison(grid_size=grid_size, output_size=output_size).build(warp_nodes[0].out)
-
-    # Provide analyzer outputs (host-side emitters) to the comparison node
-    led_cmp.set_queues(analyzers[0].out, analyzers[1].out)
-
-    # Add topics BEFORE any pipeline starts; they’ll go live once pipelines run
-    vis.addTopic("LED Sync Overlay", led_cmp.out_overlay, "images")
-    vis.addTopic("LED Sync Report",  led_cmp.out_report,  "images")
-
-    return vis, led_cmp
