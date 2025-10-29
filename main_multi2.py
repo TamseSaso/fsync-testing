@@ -106,24 +106,10 @@ with contextlib.ExitStack() as stack:
         sampler = FrameSamplingNode(sample_interval_seconds=5.0, shared_ticker=shared_ticker).build(node_out)
         samplers.append(sampler)
 
-        apriltag_node = AprilTagAnnotationNode(
-                families=args.apriltag_families,
-                max_tags=args.apriltag_max,
-                quad_decimate=args.apriltag_decimate,
-                quad_sigma=args.apriltag_sigma,
-                decode_sharpening=args.apriltag_sharpening,
-                decision_margin=args.apriltag_decision_margin,
-                persistence_seconds=args.apriltag_persistence,
-                wait_for_n_tags=None,
-            ).build(sampler.out)
-
-        composer = VideoAnnotationComposer().build(sampler.out, apriltag_node.out)
-
         # Register topic per device without any annotations (raw stream)
         suffix = f" [{device.getDeviceId()}]"
         visualizer.addTopic("Camera" + suffix, node_out, "video")
         visualizer.addTopic("Sample" + suffix, sampler.out, "video")
-        visualizer.addTopic("Sample+AprilTags" + suffix, composer.out, "video")
         pipeline.start()
         visualizer.registerPipeline(pipeline)
 
