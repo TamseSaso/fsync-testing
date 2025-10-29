@@ -9,6 +9,7 @@ from utils.sampling_node import FrameSamplingNode, SharedTicker
 from utils.apriltag_warp_node import AprilTagWarpNode
 from utils.led_grid_analyzer import LEDGridAnalyzer
 from utils.led_grid_visualizer import LEDGridVisualizer
+from utils.led_grid_comparison import LEDGridComparison
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -88,6 +89,8 @@ with contextlib.ExitStack() as stack:
     pipelines = []
     device_ids = []
     samplers = []
+    analyzers = []
+    warp_nodes = []
 
     # Create one global ticker so all devices sample at the same wall-clock time
     shared_ticker = SharedTicker(period_sec=5.0, start_delay_sec=0.3)
@@ -122,6 +125,10 @@ with contextlib.ExitStack() as stack:
         analyzer_out = led_analyzer.out  # Defer queue creation until after pipeline is started
         led_visualizer = LEDGridVisualizer(output_size=(1024, 1024)).build(led_analyzer.out)
 
+        # Collect for cross-device comparison
+        warp_nodes.append(warp_node)
+        analyzers.append(led_analyzer)
+
         suffix = f" [{device.getDeviceId()}]"
         visualizer.addTopic("Warp Sample" + suffix, warp_node.out, "images")
         visualizer.addTopic("LED Grid" + suffix, led_visualizer.out, "images")
@@ -132,6 +139,16 @@ with contextlib.ExitStack() as stack:
         pipelines.append(pipeline)
         queues.append(out_q)
         device_ids.append(deviceInfo.getXLinkDeviceDesc().name)
+
+    # Cross-device LED grid comparison (requires at least two analyzers)
+    if len(analyzers) >= 2:
+        # Use the first warped stream as a lightweight tick source to schedule the comparison node
+        led_cmp = LEDGridComparison(grid_size=32, output_size=(1024, 1024)).build(warp_nodes[0].out)
+        # Feed analyzer outputs to the comparison node
+        led_cmp.set_queues(analyzers[0].out, analyzers[1].out)
+        # Display both the overlay and a compact textual report
+        visualizer.addTopic("LED Sync Overlay", led_cmp.out_overlay, "images")
+        visualizer.addTopic("LED Sync Report", led_cmp.out_report, "images")
 
     # Wait until every sampler has received at least one frame, then start the global ticker
     for s in samplers:
