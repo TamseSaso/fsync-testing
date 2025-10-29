@@ -151,8 +151,8 @@ with contextlib.ExitStack() as stack:
 
     # Register pipelines with the visualizer before starting them, so topics can be created.
     for p in pipelines:
-        visualizer.registerPipeline(p)
         p.start()
+        visualizer.registerPipeline(p)
 
     # Wait until every sampler has received at least one frame, then start the global ticker
     for s in samplers:
