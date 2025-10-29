@@ -106,7 +106,6 @@ with contextlib.ExitStack() as stack:
 
         # Register topic per device without any annotations (raw stream)
         suffix = f" [{device.getDeviceId()}]"
-        visualizer.addTopic("Camera" + suffix, node_out, "images")
         visualizer.addTopic("Sample" + suffix, sampler.out, "images")
         pipeline.start()
         visualizer.registerPipeline(pipeline)
