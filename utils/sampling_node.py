@@ -41,15 +41,23 @@ class FrameSamplingNode:
         self._last_emitted_tick = 0
         self._ticker = SharedTicker.get_instance()
 
-    def build(self, input_stream):
-        # We assume input_stream has a method 'filter' that accepts a function to filter frames
-        # and that frames have a 'timestamp' attribute (in seconds).
-        def frame_filter(frame):
-            tick = self._ticker.tick()
-            if tick and frame.timestamp >= self._last_emitted_tick + 5:
-                self._last_emitted_tick = frame.timestamp
-                return True
-            return False
+    def build(self, input_queue):
+        class SampledStream:
+            def __init__(self, q, ticker, interval=5):
+                self.q = q
+                self.ticker = ticker
+                self.interval = interval
+                self._last_emitted_tick = 0
 
-        self.out = input_stream.filter(frame_filter)
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                while True:
+                    frame = self.q.get()
+                    if frame.timestamp >= self._last_emitted_tick + self.interval:
+                        self._last_emitted_tick = frame.timestamp
+                        return frame
+
+        self.out = SampledStream(input_queue, self._ticker)
         return self

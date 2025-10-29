@@ -103,7 +103,27 @@ with contextlib.ExitStack() as stack:
         pipeline, out_q, node_out = createPipeline(pipeline, socket)
 
         # Sample a frame every 5 seconds from the live stream, synchronized via a shared ticker
-        sampler = FrameSamplingNode().build(node_out)
+        # Modified FrameSamplingNode.build() to handle OutputQueue instead of input_stream.filter
+        class SampledStream:
+            def __init__(self, q, ticker, interval=5.0):
+                self.q = q
+                self.ticker = ticker
+                self.interval = interval
+                self.last_sample_time = 0
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                while True:
+                    frame = self.q.get()
+                    now = time.time()
+                    if now - self.last_sample_time >= self.interval:
+                        self.last_sample_time = now
+                        return frame
+
+        sampler = FrameSamplingNode()
+        sampler.out = SampledStream(node_out, ticker)
         samplers.append(sampler)
 
         apriltag_node = AprilTagAnnotationNode(
