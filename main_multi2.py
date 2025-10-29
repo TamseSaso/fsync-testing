@@ -131,24 +131,22 @@ with contextlib.ExitStack() as stack:
 
         suffix = f" [{device.getDeviceId()}]"
 
+        # Cross-device LED grid comparison (requires at least two analyzers)
+        if len(analyzers) >= 2:
+            # Use the first warped stream as a lightweight tick source to schedule the comparison node
+            led_cmp = LEDGridComparison(grid_size=32, output_size=(1024, 1024)).build(warp_nodes[0].out)
+            # Feed analyzer outputs to the comparison node
+            led_cmp.set_queues(analyzers[0].out, analyzers[1].out)
+            # Display both the overlay and a compact textual report
+            visualizer.addTopic("LED Sync Overlay", led_cmp.out_overlay, "images")
+            visualizer.addTopic("LED Sync Report", led_cmp.out_report, "images")
+
+        pipeline.start()
+        visualizer.registerPipeline(pipeline)
+
         pipelines.append(pipeline)
         queues.append(out_q)
         device_ids.append(deviceInfo.getXLinkDeviceDesc().name)
-
-    # Cross-device LED grid comparison (requires at least two analyzers)
-    if len(analyzers) >= 2:
-        # Use the first warped stream as a lightweight tick source to schedule the comparison node
-        led_cmp = LEDGridComparison(grid_size=32, output_size=(1024, 1024)).build(warp_nodes[0].out)
-        # Feed analyzer outputs to the comparison node
-        led_cmp.set_queues(analyzers[0].out, analyzers[1].out)
-        # Display both the overlay and a compact textual report
-        visualizer.addTopic("LED Sync Overlay", led_cmp.out_overlay, "images")
-        visualizer.addTopic("LED Sync Report", led_cmp.out_report, "images")
-
-    # Now that all topics are registered, start and register each pipeline
-    for p in pipelines:
-        p.start()
-        visualizer.registerPipeline(p)
 
     # Wait until every sampler has received at least one frame, then start the global ticker
     for s in samplers:
