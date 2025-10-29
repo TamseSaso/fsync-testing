@@ -6,6 +6,7 @@ import time
 import depthai as dai
 from utils.arguments import initialize_argparser
 from utils.sampling_node import FrameSamplingNode, SharedTicker
+from utils.apriltag_warp_node import AprilTagWarpNode
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -104,9 +105,18 @@ with contextlib.ExitStack() as stack:
         sampler = FrameSamplingNode(sample_interval_seconds=5.0, shared_ticker=shared_ticker).build(node_out)
         samplers.append(sampler)
 
-        # Register topic per device without any annotations (raw stream)
+        # Feed sampled frames into AprilTag warp node and display warped output
+        warp_node = AprilTagWarpNode(
+            panel_width,
+            panel_height,
+            families=args.apriltag_families,
+            quad_decimate=args.apriltag_decimate,
+            tag_size=args.apriltag_size,
+            z_offset=args.z_offset,
+        ).build(sampler.out)
+
         suffix = f" [{device.getDeviceId()}]"
-        visualizer.addTopic("Sample" + suffix, sampler.out, "images")
+        visualizer.addTopic("Warped Sample" + suffix, warp_node.out, "images")
         pipeline.start()
         visualizer.registerPipeline(pipeline)
 
