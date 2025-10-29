@@ -123,6 +123,7 @@ with contextlib.ExitStack() as stack:
         led_visualizer = LEDGridVisualizer(output_size=(1024, 1024)).build(led_analyzer.out)
 
         suffix = f" [{device.getDeviceId()}]"
+        visualizer.addTopic("Warp Sample" + suffix, warp_node.out, "images")
         visualizer.addTopic("LED Grid" + suffix, led_visualizer.out, "images")
 
         pipeline.start()
