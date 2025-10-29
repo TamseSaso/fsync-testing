@@ -73,7 +73,7 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
     # No host output queue here; host nodes consume the stream
     output = None
     if SET_MANUAL_EXPOSURE:
-        camRgb.initialControl.setManualExposure(6000, 200)
+        camRgb.initialControl.setManualExposure(6000, 300)
     # Backwards-compatible return plus node output for visualizer usage
     return pipeline, output, node_out
 
