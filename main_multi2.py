@@ -9,8 +9,7 @@ from utils.sampling_node import FrameSamplingNode, SharedTicker
 from utils.apriltag_warp_node import AprilTagWarpNode
 from utils.led_grid_analyzer import LEDGridAnalyzer
 from utils.led_grid_visualizer import LEDGridVisualizer
-from utils.led_grid_comparison import LEDGridComparison
-from utils.led_grid_composer import setup_visualizer_and_comparison
+from utils.led_grid_comparison import setup_visualizer_and_comparison
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
