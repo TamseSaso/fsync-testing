@@ -299,12 +299,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
             f"LEDGridComparison started: {self.grid_size}x{self.grid_size}, out={self.output_w}x{self.output_h}, "
             f"period={self.led_period_us}us, pass_ratio={self.pass_ratio:.2f}"
         )
-        if self._qA is None or self._qB is None:
-            print("LEDGridComparison warning: queues not set yet. Waiting...")
-            now = _t.time()
-            if now - self._last_placeholder_time > 0.5:
-                self._send_placeholder()
-                self._last_placeholder_time = now
 
         last_seqA = -1
         last_seqB = -1
@@ -325,14 +319,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 except Exception:
                     pass
 
-                # Ensure queues available
-                if self._qA is None or self._qB is None:
-                    now = _t.time()
-                    if now - self._last_placeholder_time > 0.5:
-                        self._send_placeholder()
-                        self._last_placeholder_time = now
-                    _t.sleep(0.005)
-                    continue
 
                 # Drain latest packets from either queues (if provided) or from inputs (if linked)
                 bufA: Optional[dai.Buffer] = None

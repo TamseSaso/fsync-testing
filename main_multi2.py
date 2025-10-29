@@ -96,7 +96,7 @@ with contextlib.ExitStack() as stack:
     comparisons = []
 
     # Create one global ticker so all devices sample at the same wall-clock time
-    shared_ticker = SharedTicker(period_sec=5.0, start_delay_sec=0.3)
+    shared_ticker = SharedTicker(period_sec=1.0, start_delay_sec=0.3)
 
     for deviceInfo in DEVICE_INFOS:
         pipeline = stack.enter_context(dai.Pipeline(dai.Device(deviceInfo)))
@@ -110,7 +110,7 @@ with contextlib.ExitStack() as stack:
         pipeline, out_q, node_out = createPipeline(pipeline, socket)
 
         # Sample a frame every 1 second from the live stream, synchronized via a shared ticker
-        sampler = FrameSamplingNode(sample_interval_seconds=5.0, shared_ticker=shared_ticker).build(node_out)
+        sampler = FrameSamplingNode(sample_interval_seconds=1.0, shared_ticker=shared_ticker).build(node_out)
         samplers.append(sampler)
 
         # Feed sampled frames into AprilTag warp node and display warped output
