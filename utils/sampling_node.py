@@ -148,6 +148,9 @@ class FrameSamplingNode:
         # Keep reference to upstream for subscription
         self._upstream = None
 
+        self._pull_thread: Optional[threading.Thread] = None
+        self._pull_stop = threading.Event()
+
     # Public API --------------------------------------------------------------
     @property
     def out(self) -> _HostStream:
@@ -180,14 +183,16 @@ class FrameSamplingNode:
                     self._buf.popleft()
             self._got_input_event.set()
 
-        # Subscribe to upstream (expected to be another host/device stream)
-        if hasattr(upstream, "subscribe"):
-            upstream.subscribe(on_frame)
-        elif hasattr(upstream, "addCallback"):
-            upstream.addCallback(on_frame)  # best-effort compatibility
-        else:
+        # Subscribe to upstream (host or device). Support multiple APIs:
+        #  - host-style: .subscribe(cb)
+        #  - queue-style: .tryGet() / .get()
+        #  - alt callback: .addCallback(cb)
+        if not self._attach_upstream(upstream, on_frame):
+            # Give a helpful error including available attributes
+            attrs = ", ".join(sorted(a for a in dir(upstream) if not a.startswith("_"))[:40])
             raise RuntimeError(
-                "Upstream stream does not support subscribe/addCallback; cannot build FrameSamplingNode"
+                f"Upstream object of type {type(upstream).__name__} is not subscribable. "
+                f"Tried subscribe/addCallback/polling; available attrs: {attrs}"
             )
 
         # Subscribe to shared ticker
@@ -198,6 +203,65 @@ class FrameSamplingNode:
     def wait_first_frame(self, timeout: Optional[float] = None) -> bool:
         """Block until at least one upstream frame is seen."""
         return self._got_input_event.wait(timeout=timeout)
+
+    def _attach_upstream(self, upstream, on_frame: Callable[[object], None]) -> bool:
+        # 1) Direct host-style subscription
+        if hasattr(upstream, "subscribe"):
+            try:
+                upstream.subscribe(on_frame)
+                return True
+            except Exception:
+                pass
+        # 2) Alternate callback name used by some wrappers
+        if hasattr(upstream, "addCallback"):
+            try:
+                upstream.addCallback(on_frame)
+                return True
+            except Exception:
+                pass
+        # 3) Queue-like interface: poll tryGet()/get() in a tiny thread
+        if hasattr(upstream, "tryGet") or hasattr(upstream, "get"):
+            def _poll():
+                # Small sleep to avoid a busy loop; daemon thread exits with process.
+                while not self._pull_stop.is_set():
+                    msg = None
+                    try:
+                        if hasattr(upstream, "tryGet"):
+                            msg = upstream.tryGet()
+                        else:
+                            # get() with short timeout if supported; otherwise non-blocking call
+                            try:
+                                msg = upstream.get(timeout=0.05)
+                            except TypeError:
+                                # Some get() don't take timeout; wrap in try/except
+                                try:
+                                    msg = upstream.get()
+                                except Exception:
+                                    msg = None
+                    except Exception:
+                        msg = None
+                    if msg is not None:
+                        try:
+                            on_frame(msg)
+                        except Exception:
+                            pass
+                    else:
+                        time.sleep(0.005)
+            self._pull_stop.clear()
+            self._pull_thread = threading.Thread(target=_poll, name="FSN-Poll", daemon=True)
+            self._pull_thread.start()
+            return True
+        # 4) Look for common host-bridge helpers on custom wrappers
+        for name in ("asHostStream", "toHostStream", "asHost", "hostStream"):
+            if hasattr(upstream, name):
+                try:
+                    hs = getattr(upstream, name)()
+                    if hasattr(hs, "subscribe"):
+                        hs.subscribe(on_frame)
+                        return True
+                except Exception:
+                    continue
+        return False
 
     # Internal ---------------------------------------------------------------
     def _on_tick(self, tick_time: float) -> None:
