@@ -107,20 +107,9 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                     with self.frame_lock:
                         self.latest_frame = frame_msg
 
-                # Bootstrap: emit first frame immediately to flush any startup latency (only when using shared ticker)
+                # Bootstrap: in tick-only mode do NOT emit; just mark bootstrapped so first tick can forward latest_frame
                 if frame_msg is not None and not self._bootstrapped and (self.shared_ticker is not None and self.ptp_slot_period is None):
-                    try:
-                        # If in PTP mode, set last slot idx to the current slot to avoid double emission within the same slot
-                        if self.ptp_slot_period is not None:
-                            try:
-                                ts0 = frame_msg.getTimestamp(dai.CameraExposureOffset.END).total_seconds()
-                            except Exception:
-                                ts0 = frame_msg.getTimestamp().total_seconds()
-                            self._last_slot_idx = int((ts0 + self.ptp_slot_phase) / self.ptp_slot_period)
-                        self.out.send(frame_msg)
-                        print("FrameSamplingNode bootstrap emit (first frame)")
-                    finally:
-                        self._bootstrapped = True
+                    self._bootstrapped = True
             except Exception as e:
                 print(f"FrameSamplingNode input error: {e}")
                 continue

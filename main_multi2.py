@@ -5,8 +5,6 @@ import datetime
 import time
 import depthai as dai
 from utils.arguments import initialize_argparser
-from utils.apriltag_node import AprilTagAnnotationNode
-from utils.video_annotation_composer import VideoAnnotationComposer
 from utils.sampling_node import FrameSamplingNode, SharedTicker
 # ---------------------------------------------------------------------------
 # Configuration
@@ -89,7 +87,7 @@ with contextlib.ExitStack() as stack:
     samplers = []
 
     # Create one global ticker so all devices sample at the same wall-clock time
-    shared_ticker = SharedTicker(period_sec=5.0, start_delay_sec=0.0)
+    shared_ticker = SharedTicker(period_sec=5.0, start_delay_sec=0.3)
 
     for deviceInfo in DEVICE_INFOS:
         pipeline = stack.enter_context(dai.Pipeline(dai.Device(deviceInfo)))
@@ -119,7 +117,7 @@ with contextlib.ExitStack() as stack:
 
     # Wait until every sampler has received at least one frame, then start the global ticker
     for s in samplers:
-        s.wait_first_frame(timeout=2.0)
+        s.wait_first_frame(timeout=None)
     shared_ticker.start()
 
     # Visualizer drives display and sync; no host queue consumption here
