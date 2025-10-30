@@ -168,7 +168,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
             cv2.putText(overlay, text_line2, (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (180, 180, 180), 2, cv2.LINE_AA)
 
         # Minimal report image too, so both topics are visible in the visualizer
-        report = np.zeros((240, 1024, 3), dtype=np.uint8)
+        report = np.zeros((240, 1440, 3), dtype=np.uint8)
         report[:] = (20, 20, 20)
         cv2.putText(report, "LED Sync Report", (16, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 0), 2, cv2.LINE_AA)
         cv2.putText(report, text_line1, (16, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2, cv2.LINE_AA)
@@ -184,7 +184,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         self.out_report.send(self._create_imgframe(report, ts, seq))
 
     def _draw_waiting_report(self, missing_side: str, avail_speed: Optional[int], avail_intervals: Optional[int]) -> np.ndarray:
-        w, h = 1024, 240
+        w, h = 1440, 240
         img = np.zeros((h, w, 3), dtype=np.uint8)
         def put(y, text, color=(255, 255, 255), scale=0.8, thick=2):
             cv2.putText(img, text, (16, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
@@ -287,7 +287,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         passed_by_time: bool = False,
     ) -> np.ndarray:
         # Canvas
-        W, H = 1024, 240
+        W, H = 1440, 240
         img = np.zeros((H, W, 3), dtype=np.uint8)
         img[:] = (18, 18, 18)
 
