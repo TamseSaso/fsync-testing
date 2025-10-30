@@ -507,37 +507,118 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 maskA_full = self._mask_from_grid(gridA, thrA)
                 maskB_full = self._mask_from_grid(gridB, thrB)
 
-                # Squares + intervals-based shift (A->B). Combine centroid index difference with 16-bit cycle delta.
-                idxA = self._active_index(maskA_full)
-                idxB = self._active_index(maskB_full)
                 W = self.grid_size
                 H = self.grid_size - 1
                 N = W * H
-                if idxA is not None and idxB is not None and N > 0:
-                    idxA_int, idxA_real = idxA
-                    idxB_int, idxB_real = idxB
-                    cycles_diff_signed = self._unwrap16(int(intervalsB) - int(intervalsA))
-                    squares_forward_real = (cycles_diff_signed * N + (idxB_real - idxA_real)) % N
-                    squares_forward_int = int(round(squares_forward_real)) % N
-                else:
-                    squares_forward_real = 0.0
-                    squares_forward_int = 0
 
-                # Time difference from LED dwell time (each square lasts self.led_period_us microseconds)
-                # Use the shorter of A->B and B->A as the minimal drift for sync decisions.
-                squares_short_real = squares_forward_real if squares_forward_real <= (N / 2.0) else (N - squares_forward_real)
-                dt_squares_sec = (squares_short_real * self.led_period_us) / 1e6
+                # Exclude bottom config row for square-counting logic
+                evalA = maskA_full[:-1, :]
+                evalB = maskB_full[:-1, :]
 
-                # Determine which stream is in front/back using the shorter forward path (ASCII text, A->B / B->A)
-                if squares_forward_int == 0:
-                    lead_text = "Aligned (A==B)"
+                # Flattened row-major indices for ON cells
+                flatA = evalA.flatten()
+                flatB = evalB.flatten()
+                idxsA = np.flatnonzero(flatA)
+                idxsB = np.flatnonzero(flatB)
+
+                # Row positions of the top-most lit row on each side
+                rowsA = np.flatnonzero(np.any(evalA, axis=1))
+                rowsB = np.flatnonzero(np.any(evalB, axis=1))
+                rowA_top = int(rowsA.min()) if rowsA.size > 0 else None
+                rowB_top = int(rowsB.min()) if rowsB.size > 0 else None
+
+                # Leading/trailing indices of each lit span (min/max in row-major)
+                hasA = idxsA.size > 0
+                hasB = idxsB.size > 0
+                if hasA:
+                    LA = int(idxsA.min())  # leading edge (first ON)
+                    RA = int(idxsA.max())  # trailing edge (last ON)
                 else:
-                    if squares_forward_real <= (N / 2.0):
-                        lead_text = f"Front: B | Back: A (A->B = {squares_forward_real:.3f} squares, {dt_squares_sec:.6f} s)"
+                    LA = RA = None
+                if hasB:
+                    LB = int(idxsB.min())
+                    RB = int(idxsB.max())
+                else:
+                    LB = RB = None
+
+                # Default squares and text when insufficient data
+                squares_forward_real = 0.0
+                squares_forward_int = 0
+                lead_text = "Aligned (A==B)"
+
+                if hasA and hasB and N > 0:
+                    if intervalsA == intervalsB and (rowA_top is not None) and (rowB_top is not None):
+                        # Same cycle: choose the lit band closer to the top
+                        if rowA_top < rowB_top:
+                            # A is earlier; count EMPTY cells from end(A) to start(B)
+                            gap = LB - RA - 1
+                            empties = float(gap) if gap > 0 else 0.0
+                            squares_forward_real = empties
+                            squares_forward_int = int(round(empties))
+                            lead_text = (
+                                "Aligned (A==B)" if squares_forward_int == 0 else
+                                f"Front: B | Back: A (A->B = {squares_forward_real:.3f} squares, "
+                                f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
+                            )
+                        elif rowB_top < rowA_top:
+                            # B is earlier
+                            gap = LA - RB - 1
+                            empties = float(gap) if gap > 0 else 0.0
+                            squares_forward_real = empties
+                            squares_forward_int = int(round(empties))
+                            lead_text = (
+                                "Aligned (A==B)" if squares_forward_int == 0 else
+                                f"Front: A | Back: B (B->A = {squares_forward_real:.3f} squares, "
+                                f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
+                            )
+                        else:
+                            # Same top row → earlier is the one with smaller leading index
+                            if LA <= LB:
+                                gap = LB - RA - 1
+                                empties = float(gap) if gap > 0 else 0.0
+                                squares_forward_real = empties
+                                squares_forward_int = int(round(empties))
+                                lead_text = (
+                                    "Aligned (A==B)" if squares_forward_int == 0 else
+                                    f"Front: B | Back: A (A->B = {squares_forward_real:.3f} squares, "
+                                    f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
+                                )
+                            else:
+                                gap = LA - RB - 1
+                                empties = float(gap) if gap > 0 else 0.0
+                                squares_forward_real = empties
+                                squares_forward_int = int(round(empties))
+                                lead_text = (
+                                    "Aligned (A==B)" if squares_forward_int == 0 else
+                                    f"Front: A | Back: B (B->A = {squares_forward_real:.3f} squares, "
+                                    f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
+                                )
                     else:
-                        comp_squares = N - squares_forward_real
-                        comp_time = (comp_squares * self.led_period_us) / 1e6
-                        lead_text = f"Front: A | Back: B (B->A = {comp_squares:.3f} squares, {comp_time:.6f} s)"
+                        # Intervals differ: earlier = smaller intervals value
+                        # Count EMPTY cells modulo one sweep from earlier.END to later.START
+                        if int(intervalsA) < int(intervalsB):
+                            # A earlier
+                            empties = float(((LB - RA - 1) % N)) if (LA is not None and LB is not None) else 0.0
+                            squares_forward_real = empties
+                            squares_forward_int = int(round(empties))
+                            lead_text = (
+                                "Aligned (A==B)" if squares_forward_int == 0 else
+                                f"Front: B | Back: A (A->B = {squares_forward_real:.3f} squares, "
+                                f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
+                            )
+                        else:
+                            # B earlier
+                            empties = float(((LA - RB - 1) % N)) if (LB is not None and LA is not None) else 0.0
+                            squares_forward_real = empties
+                            squares_forward_int = int(round(empties))
+                            lead_text = (
+                                "Aligned (A==B)" if squares_forward_int == 0 else
+                                f"Front: A | Back: B (B->A = {squares_forward_real:.3f} squares, "
+                                f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
+                            )
+
+                # dT from EMPTY squares (already minimal by construction)
+                dt_squares_sec = (squares_forward_real * self.led_period_us) / 1e6
 
                 # Compute signed intervals difference (B - A)
                 intervals_diff_signed = self._unwrap16(int(intervalsB) - int(intervalsA))
