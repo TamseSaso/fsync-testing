@@ -200,27 +200,31 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
     # --- Visualization ----------------------------------------------------
 
     def _active_index(self, mask_full: np.ndarray):
-        """Return (idx_int, idx_real) along the raster scan (row-major),
-        excluding the bottom config row. If no ON cells, return None.
-        idx spans [0, (grid_size-1)*grid_size - 1]."""
+        """Return (idx_int, idx_real) for the **most-advanced ON cell** along the
+        row-major raster (left→right, top→bottom), excluding the bottom config row.
+        If no ON cells, return None.
+        This is more stable than centroid when the ON area spans across rows.
+        """
         if mask_full.ndim != 2:
             return None
         if mask_full.shape[0] < 2 or mask_full.shape[1] < 1:
             return None
         eval_mask = mask_full[:-1, :]  # exclude bottom config row
-        ys, xs = np.nonzero(eval_mask)
-        if ys.size == 0:
+        H, W = eval_mask.shape
+        best_idx = None
+        for r in range(H):
+            row = eval_mask[r, :]
+            if not np.any(row):
+                continue
+            cols = np.flatnonzero(row)
+            c_right = int(cols[-1])  # rightmost ON in this row (scan is left->right)
+            idx = r * W + c_right
+            if (best_idx is None) or (idx > best_idx[0]):
+                best_idx = (idx, float(idx))
+        if best_idx is None:
             return None
-        # centroid for robustness (handles slight blurs or multiple pixels)
-        r_mean = float(ys.mean())
-        c_mean = float(xs.mean())
-        W = self.grid_size
-        H = self.grid_size - 1
-        N = W * H
-        idx_real = r_mean * W + c_mean
-        idx_int = int(round(idx_real))
-        idx_int = max(0, min(idx_int, N - 1))
-        return idx_int, float(idx_real)
+        idx_int, idx_real = best_idx
+        return int(idx_int), float(idx_real)
     def _draw_overlay(self, maskA: np.ndarray, maskB: np.ndarray) -> np.ndarray:
         """
         Color code per cell:
