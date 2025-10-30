@@ -63,6 +63,14 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
     - last-good warp hold to keep downstream nodes fed
     """
 
+    class _SimpleDetection:
+        __slots__ = ("tag_id", "center", "corners", "decision_margin")
+        def __init__(self, tag_id: int, center: Tuple[float, float], corners: np.ndarray, decision_margin: float):
+            self.tag_id = int(tag_id)
+            self.center = (float(center[0]), float(center[1]))
+            self.corners = np.asarray(corners, dtype=np.float32).reshape(4, 2)
+            self.decision_margin = float(decision_margin)
+
     def __init__(
         self,
         out_width: int,
@@ -107,6 +115,13 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         self.decision_margin = float(decision_margin)
         self.persistence_seconds = float(persistence_seconds)
         self.hold_last_warp_seconds = float(hold_last_warp_seconds)
+
+        # Robustness toggles/params
+        self.enable_clahe = True
+        self.enable_unsharp = True
+        self.enable_multiscale = True
+        self.variant_scales = (1.0, 1.5)
+        self._detector_sharp = None  # persistent sharper-decoder detector
 
         self.tag_size = tag_size  # Tag size in meters
         self.z_offset = z_offset  # Z-axis offset in meters
@@ -199,6 +214,156 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
             dtype=np.float32,
         )
 
+    def _apply_clahe_and_gamma(self, gray: np.ndarray) -> np.ndarray:
+        """Adaptive contrast + gentle sharpening for low light / glare.
+        Keeps output 8-bit and avoids over-amplifying noise.
+        """
+        g = gray
+        try:
+            # CLAHE
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            g = clahe.apply(g)
+        except Exception:
+            pass
+
+        # Adaptive gamma: brighten dark frames, tame overexposed ones
+        mean = float(np.mean(g)) if g.size else 128.0
+        gamma = 1.0
+        if mean < 70.0:
+            gamma = 0.7
+        elif mean > 180.0:
+            gamma = 1.3
+        if abs(gamma - 1.0) > 0.05:
+            inv = 1.0 / max(gamma, 1e-6)
+            lut = (np.clip(((np.arange(256) / 255.0) ** inv) * 255.0, 0, 255)).astype(np.uint8)
+            g = cv2.LUT(g, lut)
+
+        # Light denoise + unsharp mask (optional)
+        g = cv2.medianBlur(g, 3)
+        if self.enable_unsharp:
+            blur = cv2.GaussianBlur(g, (0, 0), 1.0)
+            g = cv2.addWeighted(g, 1.5, blur, -0.5, 0)
+        return g
+
+    def _wrap_detections(self, dets, sx: float = 1.0, sy: float = 1.0) -> List["AprilTagWarpNode._SimpleDetection"]:
+        out = []
+        if dets is None:
+            return out
+        for det in dets:
+            try:
+                c = np.asarray(det.corners, dtype=np.float32).reshape(4, 2).copy()
+                c[:, 0] /= max(sx, 1e-9)
+                c[:, 1] /= max(sy, 1e-9)
+                cx, cy = det.center
+                cx = float(cx) / max(sx, 1e-9)
+                cy = float(cy) / max(sy, 1e-9)
+                out.append(self._SimpleDetection(det.tag_id, (cx, cy), c, getattr(det, "decision_margin", 0.0)))
+            except Exception:
+                continue
+        return out
+
+    def _dedupe_best(self, lists: List[List["AprilTagWarpNode._SimpleDetection"]]) -> List["AprilTagWarpNode._SimpleDetection"]:
+        best: dict[int, "AprilTagWarpNode._SimpleDetection"] = {}
+        for L in lists:
+            for d in L:
+                if d.decision_margin < self.decision_margin:
+                    continue
+                cur = best.get(d.tag_id)
+                if cur is None or d.decision_margin > cur.decision_margin:
+                    best[d.tag_id] = d
+        return list(best.values())
+
+    def _detect_apriltags(self, gray: np.ndarray) -> List["AprilTagWarpNode._SimpleDetection"]:
+        """Robust multi-variant detection: raw -> CLAHE/gamma -> sharper -> upscaled."""
+        self._lazy_init()
+
+        results: List[List["AprilTagWarpNode._SimpleDetection"]] = []
+
+        # Stage 1: base detector on raw gray
+        try:
+            base = self._wrap_detections(self._detector.detect(gray), 1.0, 1.0)
+        except Exception:
+            base = []
+        if base:
+            results.append(base)
+            if len(base) >= 4:
+                return self._dedupe_best(results)
+
+        # Stage 2: preprocessed (CLAHE + gamma + unsharp)
+        g2 = self._apply_clahe_and_gamma(gray)
+        try:
+            base_pre = self._wrap_detections(self._detector.detect(g2), 1.0, 1.0)
+        except Exception:
+            base_pre = []
+        if base_pre:
+            results.append(base_pre)
+            if len(self._dedupe_best(results)) >= 4:
+                return self._dedupe_best(results)
+
+        # Stage 3: sharper decoder on preprocessed
+        if self._detector_sharp is None:
+            try:
+                self._detector_sharp = AprilTagDetector(
+                    families=self.families,
+                    nthreads=2,
+                    quad_decimate=1.0,
+                    quad_sigma=0.0,
+                    refine_edges=int(self.refine_edges),
+                    decode_sharpening=max(0.5, float(self.decode_sharpening) * 2.0),
+                )
+            except Exception:
+                self._detector_sharp = None
+        sharp_pre = []
+        if self._detector_sharp is not None:
+            try:
+                sharp_pre = self._wrap_detections(self._detector_sharp.detect(g2), 1.0, 1.0)
+            except Exception:
+                sharp_pre = []
+        if sharp_pre:
+            results.append(sharp_pre)
+            if len(self._dedupe_best(results)) >= 4:
+                return self._dedupe_best(results)
+
+        # Stage 4: high-res fallback (quad_decimate = 1.0) on raw
+        if self._detector_highres is None:
+            try:
+                self._detector_highres = AprilTagDetector(
+                    families=self.families,
+                    nthreads=2,
+                    quad_decimate=1.0,
+                    quad_sigma=self.quad_sigma,
+                    refine_edges=int(self.refine_edges),
+                    decode_sharpening=self.decode_sharpening,
+                )
+            except Exception:
+                self._detector_highres = None
+        high_raw = []
+        if self._detector_highres is not None:
+            try:
+                high_raw = self._wrap_detections(self._detector_highres.detect(gray), 1.0, 1.0)
+            except Exception:
+                high_raw = []
+        if high_raw:
+            results.append(high_raw)
+            if len(self._dedupe_best(results)) >= 4:
+                return self._dedupe_best(results)
+
+        # Stage 5: upscaled (to recover tiny/far tags)
+        if self.enable_multiscale:
+            scale = 1.5
+            try:
+                g_up = cv2.resize(g2, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                up = []
+                # Prefer sharper detector if available
+                det_eng = self._detector_sharp or self._detector_highres or self._detector
+                up = self._wrap_detections(det_eng.detect(g_up), scale, scale) if det_eng is not None else []
+            except Exception:
+                up = []
+            if up:
+                results.append(up)
+
+        return self._dedupe_best(results)
+
     def _send_img(self, bgr: np.ndarray, src: dai.ImgFrame) -> None:
         img = dai.ImgFrame()
         img.setType(dai.ImgFrame.Type.BGR888i)
@@ -241,28 +406,8 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
             gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
             now = time.time()
 
-            # 1) Detect tags
-            detections = []
-            all_dets = self._detector.detect(gray)
-            # Filter by decision margin
-            for det in all_dets:
-                if getattr(det, "decision_margin", 0.0) >= self.decision_margin:
-                    detections.append(det)
-
-            # Optional high-res fallback if decimated detector returns nothing
-            if not detections and (self.quad_decimate is None or self.quad_decimate > 1.2):
-                if self._detector_highres is None:
-                    self._detector_highres = AprilTagDetector(
-                        families=self.families,
-                        nthreads=2,
-                        quad_decimate=1.0,
-                        quad_sigma=self.quad_sigma,
-                        refine_edges=int(self.refine_edges),
-                        decode_sharpening=self.decode_sharpening,
-                    )
-                for det in self._detector_highres.detect(gray):
-                    if getattr(det, "decision_margin", 0.0) >= self.decision_margin:
-                        detections.append(det)
+            # 1) Detect tags (robust multi-variant pipeline)
+            detections = self._detect_apriltags(gray)
 
             # 2) Update persistence from current detections
             for det in detections:
