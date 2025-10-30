@@ -582,14 +582,27 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                         denom = (left - 2 * center + right)
                         if abs(denom) > 1e-9:
                             shift_cols_real = shift_cols_signed + 0.5 * (left - right) / denom
-                    shiftedB_full = self._roll_columns(maskB_full, int(round(shift_cols_real)))
+                    # Wrap to the shortest roll in [-W/2, W/2]
+                    Wf = float(W)
+                    x = shift_cols_real
+                    x_mod = ((x % Wf) + Wf) % Wf  # [0, W)
+                    shift_cols_real = x_mod - Wf if x_mod > (Wf / 2.0) else x_mod
+                    shift_cols_signed = int(round(shift_cols_real))
+
+                    shiftedB_full = self._roll_columns(maskB_full, shift_cols_signed)
                     # Δt from *real* offset and configured LED period (in microseconds)
                     dt_us_abs = int(abs(shift_cols_real) * self.led_period_us)
                     intervals_offset_real = abs(shift_cols_real)
                 else:
                     # Fallback: use host timestamps to estimate real interval offset and direction
                     shift_cols_real = signed_intervals_from_ts_real
+                    # Wrap to the shortest roll in [-W/2, W/2]
+                    Wf = float(W)
+                    x = shift_cols_real
+                    x_mod = ((x % Wf) + Wf) % Wf
+                    shift_cols_real = x_mod - Wf if x_mod > (Wf / 2.0) else x_mod
                     shift_cols_signed = int(round(shift_cols_real))
+
                     shiftedB_full = self._roll_columns(maskB_full, shift_cols_signed)
                     dt_us_abs = ts_delta_us
                     intervals_offset_real = abs(shift_cols_real)
@@ -610,8 +623,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                         dt_squares_sec=dt_squares_sec,
                         shift_cols=shift_cols_signed,
                         shift_cols_real=shift_cols_real,
-                        squares_forward_int=squares_forward_int,
-                        squares_forward_real=squares_forward_real,
+                        squares_forward_int=int(round(squares_short_real)) % max(1, N),
+                        squares_forward_real=squares_short_real,
                         intervals_diff_signed=intervals_diff_signed,
                         intervals_offset=intervals_offset,
                         intervals_offset_real=intervals_offset_real,
@@ -651,8 +664,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     dt_squares_sec=dt_squares_sec,
                     shift_cols=shift_cols_signed,
                     shift_cols_real=shift_cols_real,
-                    squares_forward_int=squares_forward_int,
-                    squares_forward_real=squares_forward_real,
+                    squares_forward_int=int(round(squares_short_real)) % max(1, N),
+                    squares_forward_real=squares_short_real,
                     intervals_diff_signed=intervals_diff_signed,
                     intervals_offset=intervals_offset,
                     intervals_offset_real=intervals_offset_real,
