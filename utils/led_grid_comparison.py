@@ -520,7 +520,9 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     squares_forward_int = 0
 
                 # Time difference from LED dwell time (each square lasts self.led_period_us microseconds)
-                dt_squares_sec = (squares_forward_real * self.led_period_us) / 1e6
+                # Use the shorter of A->B and B->A as the minimal drift for sync decisions.
+                squares_short_real = squares_forward_real if squares_forward_real <= (N / 2.0) else (N - squares_forward_real)
+                dt_squares_sec = (squares_short_real * self.led_period_us) / 1e6
 
                 # Determine which stream is in front/back using the shorter forward path (ASCII text, A->B / B->A)
                 if squares_forward_int == 0:
