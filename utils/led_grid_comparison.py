@@ -140,6 +140,10 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
     def _mask_from_grid(self, grid: np.ndarray, thr: float) -> np.ndarray:
         return (grid > thr)
 
+    def _unwrap16(self, delta: int) -> int:
+        d = int(delta) & 0xFFFF
+        return d - 0x10000 if d >= 0x8000 else d
+
 
     def _roll_columns(self, mask: np.ndarray, cols: int) -> np.ndarray:
         if cols == 0:
@@ -187,9 +191,9 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         def put(y, text, color=(255, 255, 255), scale=0.8, thick=2):
             cv2.putText(img, text, (16, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
         put(34, "LED Sync Report", (255, 255, 0))
-        put(90, f"Waiting for stream {missing_side}…", (0, 165, 255))
+        put(90, f"Waiting for stream {missing_side}...", (0, 165, 255))
         if avail_speed is not None and avail_intervals is not None:
-            put(140, f"Seen config on other side → Speed={avail_speed}, Intervals={int(avail_intervals) if avail_intervals is not None else '—'}")
+            put(140, f"Seen config on other side -> Speed={avail_speed}, Intervals={int(avail_intervals) if avail_intervals is not None else '-'}")
         put(190, "Comparison paused until both streams are available.")
         return img
 
@@ -311,7 +315,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
 
         # Timing block
         row(118, "Timing:", f"dT (from squares) = {dt_squares_sec:.6f} s   |   LED period = {int(self.led_period_us)} us")
-        row(142, "Shift:", f"{squares_forward_real:.3f} squares A→B  (int {squares_forward_int})   |   cols: {shift_cols_real:+.3f} (int {shift_cols})   |   Δintervals (B−A) = {int(intervals_diff_signed)}")
+        row(142, "Shift:", f"{squares_forward_real:.3f} squares A->B (int {squares_forward_int}) | cols: {shift_cols_real:+.3f} (int {shift_cols}) | Delta intervals (B - A) = {int(intervals_diff_signed)}")
         row(166, "Order:", lead_text)
 
         # Metrics block (excludes config row)
@@ -444,7 +448,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 if self._lastA is None and self._lastB is None:
                     now = _t.time()
                     if now - self._last_placeholder_time > 0.5:
-                        self._send_placeholder("Waiting for LED analyzer streams…", "No packets received yet from either side.")
+                        self._send_placeholder("Waiting for LED analyzer streams...", "No packets received yet from either side.")
                         self._last_placeholder_time = now
                     _t.sleep(0.001)
                     continue
@@ -499,7 +503,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 maskA_full = self._mask_from_grid(gridA, thrA)
                 maskB_full = self._mask_from_grid(gridB, thrB)
 
-                # Squares-based shift (how many squares between lights along scan path A→B)
+                # Squares + intervals-based shift (A->B). Combine centroid index difference with 16-bit cycle delta.
                 idxA = self._active_index(maskA_full)
                 idxB = self._active_index(maskB_full)
                 W = self.grid_size
@@ -508,31 +512,29 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 if idxA is not None and idxB is not None and N > 0:
                     idxA_int, idxA_real = idxA
                     idxB_int, idxB_real = idxB
-                    # forward difference along raster (wrap-around in [0, N))
-                    squares_forward_real = (idxB_real - idxA_real) % N
+                    cycles_diff_signed = self._unwrap16(int(intervalsB) - int(intervalsA))
+                    squares_forward_real = (cycles_diff_signed * N + (idxB_real - idxA_real)) % N
                     squares_forward_int = int(round(squares_forward_real)) % N
                 else:
                     squares_forward_real = 0.0
                     squares_forward_int = 0
 
-                # Time difference based on LED dwell time (each LED lasts self.led_period_us µs)
+                # Time difference from LED dwell time (each square lasts self.led_period_us microseconds)
                 dt_squares_sec = (squares_forward_real * self.led_period_us) / 1e6
 
-                # Determine which stream is in front (further along the raster) and which is back
-                # We use the minimal forward distance convention for readability
+                # Determine which stream is in front/back using the shorter forward path (ASCII text, A->B / B->A)
                 if squares_forward_int == 0:
-                    lead_text = "Aligned (A=B)"
+                    lead_text = "Aligned (A==B)"
                 else:
-                    # If forward distance A→B is <= half the path, B is ahead; otherwise A is ahead by the complement
                     if squares_forward_real <= (N / 2.0):
-                        lead_text = f"Front: B  |  Back: A  (A→B = {squares_forward_real:.3f} squares, {dt_squares_sec:.6f} s)"
+                        lead_text = f"Front: B | Back: A (A->B = {squares_forward_real:.3f} squares, {dt_squares_sec:.6f} s)"
                     else:
                         comp_squares = N - squares_forward_real
                         comp_time = (comp_squares * self.led_period_us) / 1e6
-                        lead_text = f"Front: A  |  Back: B  (B→A = {comp_squares:.3f} squares, {comp_time:.6f} s)"
+                        lead_text = f"Front: A | Back: B (B->A = {comp_squares:.3f} squares, {comp_time:.6f} s)"
 
                 # Compute signed intervals difference (B - A)
-                intervals_diff_signed = int(intervalsB) - int(intervalsA)
+                intervals_diff_signed = self._unwrap16(int(intervalsB) - int(intervalsA))
 
                 # --- Timestamp-based timing (fallback) and degenerate detection ---
                 # Exclude bottom config row for activity check
@@ -604,7 +606,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                         intervals=max(intervalsA, intervalsB),
                         dt_us_abs=dt_us_abs,
                         dt_squares_sec=dt_squares_sec,
-                        shift_cols=abs(shift_cols_signed),
+                        shift_cols=shift_cols_signed,
                         shift_cols_real=shift_cols_real,
                         squares_forward_int=squares_forward_int,
                         squares_forward_real=squares_forward_real,
@@ -645,7 +647,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     intervals=intervalsA,
                     dt_us_abs=dt_us_abs,
                     dt_squares_sec=dt_squares_sec,
-                    shift_cols=abs(shift_cols_signed),
+                    shift_cols=shift_cols_signed,
                     shift_cols_real=shift_cols_real,
                     squares_forward_int=squares_forward_int,
                     squares_forward_real=squares_forward_real,
