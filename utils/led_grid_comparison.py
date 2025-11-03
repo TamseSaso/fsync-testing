@@ -551,8 +551,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                         # Same cycle: choose the lit band closer to the top
                         if rowA_top < rowB_top:
                             # A is earlier; count EMPTY cells from end(A) to start(B)
-                            gap = LB - RA - 1
-                            empties = float(gap) if gap > 0 else 0.0
+                            empties = float(((LB - RA - 1) % N)) if (LA is not None and LB is not None) else 0.0
                             squares_forward_real = empties
                             squares_forward_int = int(round(empties))
                             lead_text = (
@@ -562,8 +561,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                             )
                         elif rowB_top < rowA_top:
                             # B is earlier
-                            gap = LA - RB - 1
-                            empties = float(gap) if gap > 0 else 0.0
+                            empties = float(((LA - RB - 1) % N)) if (LB is not None and LA is not None) else 0.0
                             squares_forward_real = empties
                             squares_forward_int = int(round(empties))
                             lead_text = (
@@ -574,8 +572,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                         else:
                             # Same top row → earlier is the one with smaller leading index
                             if LA <= LB:
-                                gap = LB - RA - 1
-                                empties = float(gap) if gap > 0 else 0.0
+                                empties = float(((LB - RA - 1) % N)) if (LA is not None and LB is not None) else 0.0
                                 squares_forward_real = empties
                                 squares_forward_int = int(round(empties))
                                 lead_text = (
@@ -584,8 +581,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                                     f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
                                 )
                             else:
-                                gap = LA - RB - 1
-                                empties = float(gap) if gap > 0 else 0.0
+                                empties = float(((LA - RB - 1) % N)) if (LB is not None and LA is not None) else 0.0
                                 squares_forward_real = empties
                                 squares_forward_int = int(round(empties))
                                 lead_text = (
@@ -674,7 +670,9 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     shift_cols_real = x_mod - Wf if x_mod > (Wf / 2.0) else x_mod
                     shift_cols_signed = int(round(shift_cols_real))
 
-                    shiftedB_full = self._roll_columns(maskB_full, shift_cols_signed)
+                    # Shift only non-config rows; keep bottom config row unshifted
+                    shiftedB_eval = self._roll_columns(maskB_full[:-1, :], shift_cols_signed)
+                    shiftedB_full = np.vstack([shiftedB_eval, maskB_full[-1:, :]])
                     # Δt from *real* offset and configured LED period (in microseconds)
                     dt_us_abs = int(abs(shift_cols_real) * self.led_period_us)
                     intervals_offset_real = abs(shift_cols_real)
@@ -688,7 +686,9 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     shift_cols_real = x_mod - Wf if x_mod > (Wf / 2.0) else x_mod
                     shift_cols_signed = int(round(shift_cols_real))
 
-                    shiftedB_full = self._roll_columns(maskB_full, shift_cols_signed)
+                    # Shift only non-config rows; keep bottom config row unshifted
+                    shiftedB_eval = self._roll_columns(maskB_full[:-1, :], shift_cols_signed)
+                    shiftedB_full = np.vstack([shiftedB_eval, maskB_full[-1:, :]])
                     dt_us_abs = ts_delta_us
                     intervals_offset_real = abs(shift_cols_real)
 
