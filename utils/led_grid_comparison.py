@@ -154,26 +154,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         # positive cols -> shift right (later in time)
         return np.roll(mask, shift=cols, axis=1)
 
-    def _roll_eval_by_squares(self, mask_full: np.ndarray, signed_squares: int) -> np.ndarray:
-        """Roll the evaluation region (all but bottom row) forward/backward by a
-        signed number of row-major steps. Positive => forward in time (right, then down).
-        Bottom config row remains unshifted.
-        Returns the shifted eval-region mask (without the bottom row).
-        """
-        eval_in = mask_full[:-1, :]
-        H, W = eval_in.shape
-        if H == 0 or W == 0:
-            return eval_in
-        N = H * W
-        # Normalize signed squares into [0, N)
-        s = int(signed_squares)
-        s_mod = ((s % N) + N) % N
-        row_shift = s_mod // W
-        col_shift = s_mod % W
-        out = np.roll(eval_in, shift=row_shift, axis=0)
-        out = np.roll(out, shift=col_shift, axis=1)
-        return out
-
     def _create_imgframe(self, bgr: np.ndarray, ts, seq: int) -> dai.ImgFrame:
         img = dai.ImgFrame()
         img.setType(dai.ImgFrame.Type.BGR888i)
@@ -565,7 +545,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 squares_forward_real = 0.0
                 squares_forward_int = 0
                 lead_text = "Aligned (A==B)"
-                align_squares_content = 0  # signed squares to move B to A when config matches
 
                 if hasA and hasB and N > 0:
                     if intervalsA == intervalsB and (rowA_top is not None) and (rowB_top is not None):
@@ -585,8 +564,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                                 empties = 0.0
                             squares_forward_real = empties
                             squares_forward_int = int(round(empties))
-                            # B is later; move B backward to align with A
-                            align_squares_content = -squares_forward_int
                             lead_text = (
                                 "Aligned (A==B)" if squares_forward_int == 0 else
                                 f"Front: B | Back: A (A->B = {squares_forward_real:.3f} squares, "
@@ -607,8 +584,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                                 empties = 0.0
                             squares_forward_real = empties
                             squares_forward_int = int(round(empties))
-                            # B is earlier; move B forward to align with A
-                            align_squares_content = +squares_forward_int
                             lead_text = (
                                 "Aligned (A==B)" if squares_forward_int == 0 else
                                 f"Front: A | Back: B (B->A = {squares_forward_real:.3f} squares, "
@@ -630,8 +605,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                                     empties = 0.0
                                 squares_forward_real = empties
                                 squares_forward_int = int(round(empties))
-                                # B is later; move B backward
-                                align_squares_content = -squares_forward_int
                                 lead_text = (
                                     "Aligned (A==B)" if squares_forward_int == 0 else
                                     f"Front: B | Back: A (A->B = {squares_forward_real:.3f} squares, "
@@ -651,8 +624,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                                     empties = 0.0
                                 squares_forward_real = empties
                                 squares_forward_int = int(round(empties))
-                                # B is earlier; move B forward
-                                align_squares_content = +squares_forward_int
                                 lead_text = (
                                     "Aligned (A==B)" if squares_forward_int == 0 else
                                     f"Front: A | Back: B (B->A = {squares_forward_real:.3f} squares, "
@@ -761,11 +732,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     dt_us_abs = ts_delta_us
                     intervals_offset_real = abs(shift_cols_real)
 
-                # Recompute B alignment for visualization using row+col roll in row-major squares.
-                # If config matches, use content-derived signed squares; otherwise, use timestamp-derived estimate.
-                align_squares_final = align_squares_content if cfg_ok else int(round(signed_intervals_from_ts_real))
-                shiftedB_eval_vis = self._roll_eval_by_squares(maskB_full, align_squares_final)
-                shiftedB_full = np.vstack([shiftedB_eval_vis, maskB_full[-1:, :]])
                 # Prepare overlay image from full masks (includes bottom row)
                 overlay_img = self._draw_overlay(maskA_full, shiftedB_full)
                 overlay_frame = self._create_imgframe(overlay_img, tsA, max(seqA, seqB))
