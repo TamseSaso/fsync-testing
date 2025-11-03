@@ -51,16 +51,11 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
     Output: dai.ImgFrame (sampled at specified interval)
     """
 
-    def __init__(self, sample_interval_seconds: Optional[float] = 5.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = 0.0) -> None:
+    def __init__(self, sample_interval_seconds: Optional[float] = 5.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = None, ptp_slot_phase: float = 0.0) -> None:
         super().__init__()
         
         self.input = self.createInput()
         self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
-        try:
-            self.input.setBlocking(False)
-            self.input.setQueueSize(1)
-        except AttributeError:
-            pass
         
         self.out = self.createOutput()
         self.out.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
@@ -110,35 +105,17 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         # Main loop: continuously update latest frame
         while self.isRunning():
             try:
-                frame_msg: Optional[dai.ImgFrame] = None
-                try:
-                    while True:
-                        try:
-                            m = self.input.tryGet()
-                        except AttributeError:
-                            if not self.input.has():
-                                break
-                            m = self.input.get()
-                        if m is None:
-                            break
-                        frame_msg = m
-                except Exception:
-                    frame_msg = None
-
-                if frame_msg is None:
-                    # No new frame; yield briefly to avoid busy spin
-                    time.sleep(0.001)
-                    continue
-
-                with self.frame_lock:
-                    self.latest_frame = frame_msg
+                frame_msg: dai.ImgFrame = self.input.get()
+                if frame_msg is not None:
+                    with self.frame_lock:
+                        self.latest_frame = frame_msg
 
                 # Forward every frame immediately in every-frame mode
-                if self._every_frame_mode:
+                if self._every_frame_mode and frame_msg is not None:
                     self.out.send(frame_msg)
 
                 # Bootstrap: in tick-only mode do NOT emit; just mark bootstrapped so first tick can forward latest_frame
-                if not self._bootstrapped and (self.shared_ticker is not None and self.ptp_slot_period is None):
+                if frame_msg is not None and not self._bootstrapped and (self.shared_ticker is not None and self.ptp_slot_period is None):
                     self._bootstrapped = True
             except Exception as e:
                 print(f"FrameSamplingNode input error: {e}")
