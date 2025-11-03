@@ -172,6 +172,36 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         out = np.roll(out, shift=col_shift, axis=1)
         return out
 
+    def _main_line_run(self, eval_mask: np.ndarray, min_run: int = 2):
+        """Return (row, c0, c1) for the *longest contiguous ON run* in the eval mask
+        (top H rows). Ties are broken by the run whose **right end** has the largest
+        row-major index. If no ON cells, return None.
+        min_run controls noise rejection (shorter runs are ignored unless nothing else exists).
+        """
+        if eval_mask.ndim != 2:
+            return None
+        H, W = eval_mask.shape
+        best = None  # (length, right_idx, row, c0, c1)
+        for r in range(H):
+            row = np.asarray(eval_mask[r, :], dtype=bool)
+            if not row.any():
+                continue
+            padded = np.concatenate(([False], row, [False]))
+            diffs = np.diff(padded.astype(np.int8))
+            starts = np.flatnonzero(diffs == 1)
+            ends   = np.flatnonzero(diffs == -1) - 1
+            for s, e in zip(starts, ends):
+                length = (e - s + 1)
+                if best is None:
+                    consider = True
+                else:
+                    consider = (length > best[0]) or (length == best[0] and (r * W + e) > best[1])
+                if consider and (length >= min_run or best is None):
+                    best = (length, r * W + e, r, int(s), int(e))
+        if best is None:
+            return None
+        return best[2], best[3], best[4]
+
     def _create_imgframe(self, bgr: np.ndarray, ts, seq: int) -> dai.ImgFrame:
         img = dai.ImgFrame()
         img.setType(dai.ImgFrame.Type.BGR888i)
@@ -567,9 +597,24 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
 
                 # Frontier-based empty-squares calculation (row-major sweep) using intervals
                 if hasA and hasB and N > 0 and idxsA.size > 0 and idxsB.size > 0:
-                    # First/last lit indices along the sweep (exclude config row)
-                    firstA = int(idxsA.min()); lastA = int(idxsA.max())
-                    firstB = int(idxsB.min()); lastB = int(idxsB.max())
+                    # Use the main line run for each mask, fallback to global extrema if not found
+                    runA = self._main_line_run(evalA, min_run=2)
+                    runB = self._main_line_run(evalB, min_run=2)
+
+                    if runA is not None:
+                        rA, sA, eA = runA
+                        firstA = rA * W + sA
+                        lastA  = rA * W + eA
+                    else:
+                        # Fallback to global extrema if no contiguous run found
+                        firstA = int(idxsA.min()); lastA = int(idxsA.max())
+
+                    if runB is not None:
+                        rB, sB, eB = runB
+                        firstB = rB * W + sB
+                        lastB  = rB * W + eB
+                    else:
+                        firstB = int(idxsB.min()); lastB = int(idxsB.max())
 
                     # Absolute (unwrapped) positions using the lap counters
                     PA_first = int(intervalsA) * N + firstA
