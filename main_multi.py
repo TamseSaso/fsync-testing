@@ -4,7 +4,6 @@ import time
 import cv2
 import datetime
 
-from utils.arguments import initialize_argparser
 from utils.apriltag_node import AprilTagAnnotationNode
 from utils.apriltag_warp_node import AprilTagWarpNode
 from utils.sampling_node import FrameSamplingNode
@@ -50,10 +49,6 @@ assert len(DEVICE_INFOS) > 1, "At least two devices are required for this exampl
 # Synchronization settings
 TARGET_FPS = 25  # Must match sensorFps in Camera
 SET_MANUAL_EXPOSURE = True  # Toggle manual exposure like in multi_devices.py
-
-# Parse arguments used by the processing nodes (panel, apriltag, etc.)
-_, args = initialize_argparser()
-panel_width, panel_height = map(int, args.panel_size.split(","))
 
 EFFECTIVE_FPS = TARGET_FPS
 # Sample once every 5 seconds using PTP-slotted timestamps

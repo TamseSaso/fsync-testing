@@ -1,4 +1,4 @@
-from .sampling_node import FrameSamplingNode, SharedTicker
+from .sampling_node import FrameSamplingNode
 from .apriltag_warp_node import AprilTagWarpNode
 from .led_grid_analyzer import LEDGridAnalyzer
 from .led_grid_comparison import LEDGridComparison
@@ -17,6 +17,7 @@ def deviceAnalyzer(
     visualizer = None,
     device = None,
     warp_size: tuple[int, int] = (1024, 1024),
+    debug: bool = False,
 ):
     """
     Build the per-device chain: FrameSamplingNode -> AprilTagWarpNode -> LEDGridAnalyzer.
@@ -55,14 +56,15 @@ def deviceAnalyzer(
     led_visualizer = LEDGridVisualizer(output_size=(1024, 1024)).build(led_analyzer.out)
     visualizers.append(led_visualizer)
 
-    suffix = f" [{device.getDeviceId()}]"
-    visualizer.addTopic("Sample" + suffix, sampler.out, "images")
-    visualizer.addTopic("Warped Sample" + suffix, warp_node.out, "images")
-    visualizer.addTopic("LED Grid" + suffix, led_visualizer.out, "images")
+    if debug == True:
+        suffix = f" [{device.getDeviceId()}]"
+        visualizer.addTopic("Sample" + suffix, sampler.out, "images")
+        visualizer.addTopic("Warped Sample" + suffix, warp_node.out, "images")
+        visualizer.addTopic("LED Grid" + suffix, led_visualizer.out, "images")
 
     return samplers, warp_nodes, analyzers
 
-def deviceComparison(analyzers, warp_nodes, comparisons, sync_threshold_sec, grid_size=32, output_size=(1024, 1024), visualizer=None):
+def deviceComparison(analyzers, warp_nodes, comparisons, sync_threshold_sec, grid_size=32, output_size=(1024, 1024), visualizer=None, debug: bool = False):
     """
     If at least two analyzers exist, create an LEDGridComparison node, bind it to the
     first pipeline via a lightweight tick (warp_nodes[0].out), wire its inputs to the
@@ -79,7 +81,8 @@ def deviceComparison(analyzers, warp_nodes, comparisons, sync_threshold_sec, gri
         # Wire analyzers directly to the new comparison node we just created
         led_cmp.set_queues(analyzers[0].out, analyzers[1].out)
 
-        visualizer.addTopic("LED Sync Overlay", led_cmp.out_overlay, "images")
-        visualizer.addTopic("LED Sync Report", led_cmp.out_report, "images")
-        return led_cmp
+        if debug == True:
+            visualizer.addTopic("LED Sync Overlay", led_cmp.out_overlay, "images")
+            visualizer.addTopic("LED Sync Report", led_cmp.out_report, "images")
+        return None
     return None

@@ -1,10 +1,5 @@
-#!/usr/bin/env python3
-
 import contextlib
-import datetime
-import time
 import depthai as dai
-from utils.arguments import initialize_argparser
 from utils.sync_analyzer import deviceAnalyzer, deviceComparison
 from utils.sampling_node import SharedTicker
 # ---------------------------------------------------------------------------
@@ -16,37 +11,6 @@ SET_MANUAL_EXPOSURE = True  # Set to True to use manual exposure settings
 # DEVICE_INFOS: list[dai.DeviceInfo] = ["IP_MASTER", "IP_SLAVE_1"] # Insert the device IPs here, e.g.:
 DEVICE_INFOS = [dai.DeviceInfo(ip) for ip in ["10.12.211.82", "10.12.211.84"]] # The master camera needs to be first here
 assert len(DEVICE_INFOS) > 1, "At least two devices are required for this example."
-# Parse CLI arguments
-_, args = initialize_argparser()
-panel_width, panel_height = map(int, args.panel_size.split(","))
-# ---------------------------------------------------------------------------
-# Helpers (identical to multi_devices.py)
-# ---------------------------------------------------------------------------
-class FPSCounter:
-    def __init__(self):
-        self.frameTimes = []
-
-    def tick(self):
-        now = time.time()
-        self.frameTimes.append(now)
-        self.frameTimes = self.frameTimes[-100:]
-
-    def getFps(self):
-        if len(self.frameTimes) <= 1:
-            return 0
-        # Calculate the FPS
-        return (len(self.frameTimes) - 1) / (self.frameTimes[-1] - self.frameTimes[0])
-
-
-def format_time(td: datetime.timedelta) -> str:
-    hours, remainder_seconds = divmod(td.seconds, 3600)
-    minutes, seconds = divmod(remainder_seconds, 60)
-    milliseconds, microseconds_remainder = divmod(td.microseconds, 1000)
-    days_prefix = f"{td.days} day{'s' if td.days != 1 else ''}, " if td.days else ""
-    return (
-        f"{days_prefix}{hours:02d}:{minutes:02d}:{seconds:02d}."
-        f"{milliseconds:03d}.{microseconds_remainder:03d}"
-    )
 
 # ---------------------------------------------------------------------------
 # Pipeline creation (unchanged API – only uses TARGET_FPS constant)
@@ -103,14 +67,14 @@ with contextlib.ExitStack() as stack:
         socket = device.getConnectedCameras()[0]
         pipeline, out_q, node_out = createPipeline(pipeline, socket)
 
-        samplers, warp_nodes, analyzers = deviceAnalyzer(node_out, shared_ticker, sample_interval_seconds = 10.0, threshold_multiplier = 1.75, visualizer = visualizer, device = device)
+        samplers, warp_nodes, analyzers = deviceAnalyzer(node_out, shared_ticker, sample_interval_seconds = 10.0, threshold_multiplier = 1.75, visualizer = visualizer, device = device, debug = True)
 
         pipelines.append(pipeline)
         device_ids.append(deviceInfo.getXLinkDeviceDesc().name)
 
 
     # Register comparison topics before starting pipelines (required by RemoteConnection)
-    deviceComparison(analyzers, warp_nodes, comparisons, SYNC_THRESHOLD_SEC, visualizer=visualizer)
+    deviceComparison(analyzers, warp_nodes, comparisons, SYNC_THRESHOLD_SEC, visualizer=visualizer, debug = True)
 
     # Register pipelines with the visualizer before starting them, so topics can be created.
     for p in pipelines:

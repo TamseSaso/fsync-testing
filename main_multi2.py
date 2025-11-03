@@ -4,7 +4,6 @@ import contextlib
 import datetime
 import time
 import depthai as dai
-from utils.arguments import initialize_argparser
 from utils.sampling_node import FrameSamplingNode, SharedTicker
 from utils.apriltag_warp_node import AprilTagWarpNode
 from utils.led_grid_analyzer import LEDGridAnalyzer
@@ -20,9 +19,6 @@ SET_MANUAL_EXPOSURE = True  # Set to True to use manual exposure settings
 # DEVICE_INFOS: list[dai.DeviceInfo] = ["IP_MASTER", "IP_SLAVE_1"] # Insert the device IPs here, e.g.:
 DEVICE_INFOS = [dai.DeviceInfo(ip) for ip in ["10.12.211.82", "10.12.211.84"]] # The master camera needs to be first here
 assert len(DEVICE_INFOS) > 1, "At least two devices are required for this example."
-# Parse CLI arguments
-_, args = initialize_argparser()
-panel_width, panel_height = map(int, args.panel_size.split(","))
 debug = True
 # ---------------------------------------------------------------------------
 # Helpers (identical to multi_devices.py)
@@ -114,14 +110,7 @@ with contextlib.ExitStack() as stack:
         samplers.append(sampler)
 
         # Feed sampled frames into AprilTag warp node and display warped output
-        warp_node = AprilTagWarpNode(
-            panel_width,
-            panel_height,
-            families=args.apriltag_families,
-            quad_decimate=args.apriltag_decimate,
-            tag_size=args.apriltag_size,
-            z_offset=args.z_offset,
-        ).build(sampler.out)
+        warp_node = AprilTagWarpNode().build(sampler.out)
 
         # LED grid analysis from sampled frames, then visualize as an image
         led_analyzer = LEDGridAnalyzer(grid_size=32, threshold_multiplier=1.75).build(warp_node.out)
