@@ -551,7 +551,17 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                         # Same cycle: choose the lit band closer to the top
                         if rowA_top < rowB_top:
                             # A is earlier; count EMPTY cells from end(A) to start(B)
-                            empties = float(((LB - RA - 1) % N)) if (LA is not None and LB is not None) else 0.0
+                            # Treat touching/overlap as zero-gap; otherwise circular forward gap from A.end to B.start
+                            if (LA is not None and RA is not None and LB is not None and RB is not None):
+                                segA = [(LA, RA)] if LA <= RA else [(LA, N - 1), (0, RA)]
+                                segB = [(LB, RB)] if LB <= RB else [(LB, N - 1), (0, RB)]
+                                overlaps = any(not (a1 < b0 or b1 < a0) for (a0, a1) in segA for (b0, b1) in segB)
+                                if overlaps:
+                                    empties = 0.0
+                                else:
+                                    empties = float((LB - RA - 1) % N)
+                            else:
+                                empties = 0.0
                             squares_forward_real = empties
                             squares_forward_int = int(round(empties))
                             lead_text = (
@@ -561,7 +571,17 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                             )
                         elif rowB_top < rowA_top:
                             # B is earlier
-                            empties = float(((LA - RB - 1) % N)) if (LB is not None and LA is not None) else 0.0
+                            # Treat touching/overlap as zero-gap; otherwise circular forward gap from B.end to A.start
+                            if (LA is not None and RA is not None and LB is not None and RB is not None):
+                                segA = [(LA, RA)] if LA <= RA else [(LA, N - 1), (0, RA)]
+                                segB = [(LB, RB)] if LB <= RB else [(LB, N - 1), (0, RB)]
+                                overlaps = any(not (a1 < b0 or b1 < a0) for (a0, a1) in segA for (b0, b1) in segB)
+                                if overlaps:
+                                    empties = 0.0
+                                else:
+                                    empties = float((LA - RB - 1) % N)
+                            else:
+                                empties = 0.0
                             squares_forward_real = empties
                             squares_forward_int = int(round(empties))
                             lead_text = (
@@ -572,7 +592,17 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                         else:
                             # Same top row → earlier is the one with smaller leading index
                             if LA <= LB:
-                                empties = float(((LB - RA - 1) % N)) if (LA is not None and LB is not None) else 0.0
+                                # Treat touching/overlap as zero-gap; otherwise circular forward gap from A.end to B.start
+                                if (LA is not None and RA is not None and LB is not None and RB is not None):
+                                    segA = [(LA, RA)] if LA <= RA else [(LA, N - 1), (0, RA)]
+                                    segB = [(LB, RB)] if LB <= RB else [(LB, N - 1), (0, RB)]
+                                    overlaps = any(not (a1 < b0 or b1 < a0) for (a0, a1) in segA for (b0, b1) in segB)
+                                    if overlaps:
+                                        empties = 0.0
+                                    else:
+                                        empties = float((LB - RA - 1) % N)
+                                else:
+                                    empties = 0.0
                                 squares_forward_real = empties
                                 squares_forward_int = int(round(empties))
                                 lead_text = (
@@ -581,7 +611,17 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                                     f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
                                 )
                             else:
-                                empties = float(((LA - RB - 1) % N)) if (LB is not None and LA is not None) else 0.0
+                                # Treat touching/overlap as zero-gap; otherwise circular forward gap from B.end to A.start
+                                if (LA is not None and RA is not None and LB is not None and RB is not None):
+                                    segA = [(LA, RA)] if LA <= RA else [(LA, N - 1), (0, RA)]
+                                    segB = [(LB, RB)] if LB <= RB else [(LB, N - 1), (0, RB)]
+                                    overlaps = any(not (a1 < b0 or b1 < a0) for (a0, a1) in segA for (b0, b1) in segB)
+                                    if overlaps:
+                                        empties = 0.0
+                                    else:
+                                        empties = float((LA - RB - 1) % N)
+                                else:
+                                    empties = 0.0
                                 squares_forward_real = empties
                                 squares_forward_int = int(round(empties))
                                 lead_text = (
