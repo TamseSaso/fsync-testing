@@ -89,6 +89,9 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         self._seq_counter = 1
         self._lastA = None  # (grid, avg, mult, speed, intervals, ts, seq)
         self._lastB = None  # (grid, avg, mult, speed, intervals, ts, seq)
+        # Track last compared sequence numbers so we only compare when BOTH sides updated
+        self._compared_seqA = -1
+        self._compared_seqB = -1
 
         # Host-side queues are provided from analyzer node outputs
         self._qA = None
@@ -360,8 +363,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
             f"period={self.led_period_us}us, pass_ratio={self.pass_ratio:.2f}"
         )
 
-        last_seqA = -1
-        last_seqB = -1
 
         while self.isRunning():
             try:
@@ -492,11 +493,10 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 gridA, avgA, multA, speedA, intervalsA, tsA, seqA = self._lastA
                 gridB, avgB, multB, speedB, intervalsB, tsB, seqB = self._lastB
 
-                # Avoid re-processing identical seq pairs
-                if seqA == last_seqA and seqB == last_seqB:
+                # Wait until BOTH sides have new frames since the last comparison to avoid double-printing
+                if not ((seqA != self._compared_seqA) and (seqB != self._compared_seqB)):
                     _t.sleep(0.0005)
                     continue
-                last_seqA, last_seqB = seqA, seqB
 
                 # Config check (strict match)
                 cfg_ok = (intervalsA == intervalsB)
@@ -701,7 +701,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 # Console log: print timing deltas for quick CLI inspection
                 try:
                     print(
-                        f"LEDGridComparison dT: squares={dt_squares_sec:.6f}s | ",
+                        f"LEDGridComparison dT: squares={dt_squares_sec:.6f}s",
                         flush=True,
                     )
                 except Exception:
@@ -728,6 +728,9 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     )
                     report_frame = self._create_imgframe(report_img, tsA, max(seqA, seqB))
                     self.out_report.send(report_frame)
+                    # Mark this pair as compared
+                    self._compared_seqA = seqA
+                    self._compared_seqB = seqB
                     continue
 
                 # Exclude bottom configuration row for metrics
@@ -770,6 +773,9 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 )
                 report_frame = self._create_imgframe(report_img, tsA, max(seqA, seqB))
                 self.out_report.send(report_frame)
+                # Mark this pair as compared
+                self._compared_seqA = seqA
+                self._compared_seqB = seqB
 
             except Exception as e:
                 print(f"LEDGridComparison error: {e}")
