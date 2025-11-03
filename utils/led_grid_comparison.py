@@ -89,9 +89,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         self._seq_counter = 1
         self._lastA = None  # (grid, avg, mult, speed, intervals, ts, seq)
         self._lastB = None  # (grid, avg, mult, speed, intervals, ts, seq)
-        # Track last compared sequence numbers so we only compare when BOTH sides updated
-        self._compared_seqA = -1
-        self._compared_seqB = -1
 
         # Host-side queues are provided from analyzer node outputs
         self._qA = None
@@ -153,54 +150,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
             return mask
         # positive cols -> shift right (later in time)
         return np.roll(mask, shift=cols, axis=1)
-
-    def _roll_eval_by_squares(self, mask_full: np.ndarray, signed_squares: int) -> np.ndarray:
-        """Roll the eval region (exclude bottom config row) by a signed number of
-        row-major steps (left→right, then down). Positive = forward in time.
-        Returns the shifted eval mask (top H rows).
-        """
-        eval_in = mask_full[:-1, :]
-        H, W = eval_in.shape
-        if H == 0 or W == 0:
-            return eval_in
-        N = H * W
-        s = int(signed_squares)
-        s_mod = ((s % N) + N) % N
-        row_shift = s_mod // W
-        col_shift = s_mod % W
-        out = np.roll(eval_in, shift=row_shift, axis=0)
-        out = np.roll(out, shift=col_shift, axis=1)
-        return out
-
-    def _main_line_run(self, eval_mask: np.ndarray, min_run: int = 2):
-        """Return (row, c0, c1) for the *longest contiguous ON run* in the eval mask
-        (top H rows). Ties are broken by the run whose **right end** has the largest
-        row-major index. If no ON cells, return None.
-        min_run controls noise rejection (shorter runs are ignored unless nothing else exists).
-        """
-        if eval_mask.ndim != 2:
-            return None
-        H, W = eval_mask.shape
-        best = None  # (length, right_idx, row, c0, c1)
-        for r in range(H):
-            row = np.asarray(eval_mask[r, :], dtype=bool)
-            if not row.any():
-                continue
-            padded = np.concatenate(([False], row, [False]))
-            diffs = np.diff(padded.astype(np.int8))
-            starts = np.flatnonzero(diffs == 1)
-            ends   = np.flatnonzero(diffs == -1) - 1
-            for s, e in zip(starts, ends):
-                length = (e - s + 1)
-                if best is None:
-                    consider = True
-                else:
-                    consider = (length > best[0]) or (length == best[0] and (r * W + e) > best[1])
-                if consider and (length >= min_run or best is None):
-                    best = (length, r * W + e, r, int(s), int(e))
-        if best is None:
-            return None
-        return best[2], best[3], best[4]
 
     def _create_imgframe(self, bgr: np.ndarray, ts, seq: int) -> dai.ImgFrame:
         img = dai.ImgFrame()
@@ -411,6 +360,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
             f"period={self.led_period_us}us, pass_ratio={self.pass_ratio:.2f}"
         )
 
+        last_seqA = -1
+        last_seqB = -1
 
         while self.isRunning():
             try:
@@ -541,10 +492,11 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 gridA, avgA, multA, speedA, intervalsA, tsA, seqA = self._lastA
                 gridB, avgB, multB, speedB, intervalsB, tsB, seqB = self._lastB
 
-                # Wait until BOTH sides have new frames since the last comparison to avoid double-printing
-                if not ((seqA != self._compared_seqA) and (seqB != self._compared_seqB)):
+                # Avoid re-processing identical seq pairs
+                if seqA == last_seqA and seqB == last_seqB:
                     _t.sleep(0.0005)
                     continue
+                last_seqA, last_seqB = seqA, seqB
 
                 # Config check (strict match)
                 cfg_ok = (intervalsA == intervalsB)
@@ -593,71 +545,77 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 squares_forward_real = 0.0
                 squares_forward_int = 0
                 lead_text = "Aligned (A==B)"
-                align_squares_content = 0  # signed squares to move B to A for overlay when config matches
 
-                # Frontier-based empty-squares calculation (row-major sweep) using intervals
-                if hasA and hasB and N > 0 and idxsA.size > 0 and idxsB.size > 0:
-                    # Use the main line run for each mask, fallback to global extrema if not found
-                    runA = self._main_line_run(evalA, min_run=2)
-                    runB = self._main_line_run(evalB, min_run=2)
-
-                    if runA is not None:
-                        rA, sA, eA = runA
-                        firstA = rA * W + sA
-                        lastA  = rA * W + eA
+                if hasA and hasB and N > 0:
+                    if intervalsA == intervalsB and (rowA_top is not None) and (rowB_top is not None):
+                        # Same cycle: choose the lit band closer to the top
+                        if rowA_top < rowB_top:
+                            # A is earlier; count EMPTY cells from end(A) to start(B)
+                            gap = LB - RA - 1
+                            empties = float(gap) if gap > 0 else 0.0
+                            squares_forward_real = empties
+                            squares_forward_int = int(round(empties))
+                            lead_text = (
+                                "Aligned (A==B)" if squares_forward_int == 0 else
+                                f"Front: B | Back: A (A->B = {squares_forward_real:.3f} squares, "
+                                f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
+                            )
+                        elif rowB_top < rowA_top:
+                            # B is earlier
+                            gap = LA - RB - 1
+                            empties = float(gap) if gap > 0 else 0.0
+                            squares_forward_real = empties
+                            squares_forward_int = int(round(empties))
+                            lead_text = (
+                                "Aligned (A==B)" if squares_forward_int == 0 else
+                                f"Front: A | Back: B (B->A = {squares_forward_real:.3f} squares, "
+                                f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
+                            )
+                        else:
+                            # Same top row → earlier is the one with smaller leading index
+                            if LA <= LB:
+                                gap = LB - RA - 1
+                                empties = float(gap) if gap > 0 else 0.0
+                                squares_forward_real = empties
+                                squares_forward_int = int(round(empties))
+                                lead_text = (
+                                    "Aligned (A==B)" if squares_forward_int == 0 else
+                                    f"Front: B | Back: A (A->B = {squares_forward_real:.3f} squares, "
+                                    f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
+                                )
+                            else:
+                                gap = LA - RB - 1
+                                empties = float(gap) if gap > 0 else 0.0
+                                squares_forward_real = empties
+                                squares_forward_int = int(round(empties))
+                                lead_text = (
+                                    "Aligned (A==B)" if squares_forward_int == 0 else
+                                    f"Front: A | Back: B (B->A = {squares_forward_real:.3f} squares, "
+                                    f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
+                                )
                     else:
-                        # Fallback to global extrema if no contiguous run found
-                        firstA = int(idxsA.min()); lastA = int(idxsA.max())
-
-                    if runB is not None:
-                        rB, sB, eB = runB
-                        firstB = rB * W + sB
-                        lastB  = rB * W + eB
-                    else:
-                        firstB = int(idxsB.min()); lastB = int(idxsB.max())
-
-                    # Absolute (unwrapped) positions using the lap counters
-                    PA_first = int(intervalsA) * N + firstA
-                    PA_last  = int(intervalsA) * N + lastA
-                    PB_first = int(intervalsB) * N + firstB
-                    PB_last  = int(intervalsB) * N + lastB
-
-                    # Normalize forward gaps into [0, N)
-                    def norm_gap(d: int) -> int:
-                        return ((d % N) + N) % N
-
-                    # A behind → gap from A.last to B.first
-                    gapAB = norm_gap(PB_first - PA_last)
-                    emptiesAB = float(max(0, gapAB - 1))
-                    # B behind → gap from B.last to A.first
-                    gapBA = norm_gap(PA_first - PB_last)
-                    emptiesBA = float(max(0, gapBA - 1))
-
-                    if emptiesAB <= emptiesBA:
-                        # Front: B, Back: A (A→B)
-                        squares_forward_real = emptiesAB
-                        squares_forward_int = int(round(squares_forward_real))
-                        lead_text = (
-                            "Aligned (A==B)" if squares_forward_int == 0 else
-                            f"Front: B | Back: A (A->B = {squares_forward_real:.3f} squares, "
-                            f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
-                        )
-                        # B is in front; move B backward so B.first lines up just after A.last
-                        # Use (gap + 1) squares to close the gap completely; if already touching (0), shift 0
-                        align_delta = (squares_forward_int + 1) if squares_forward_int > 0 else 0
-                        align_squares_content = -align_delta
-                    else:
-                        # Front: A, Back: B (B→A)
-                        squares_forward_real = emptiesBA
-                        squares_forward_int = int(round(squares_forward_real))
-                        lead_text = (
-                            "Aligned (A==B)" if squares_forward_int == 0 else
-                            f"Front: A | Back: B (B->A = {squares_forward_real:.3f} squares, "
-                            f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
-                        )
-                        # A is in front; move B forward so B.first lines up just after A.last (in B→A sense)
-                        align_delta = (squares_forward_int + 1) if squares_forward_int > 0 else 0
-                        align_squares_content = +align_delta
+                        # Intervals differ: earlier = smaller intervals value
+                        # Count EMPTY cells modulo one sweep from earlier.END to later.START
+                        if int(intervalsA) < int(intervalsB):
+                            # A earlier
+                            empties = float(((LB - RA - 1) % N)) if (LA is not None and LB is not None) else 0.0
+                            squares_forward_real = empties
+                            squares_forward_int = int(round(empties))
+                            lead_text = (
+                                "Aligned (A==B)" if squares_forward_int == 0 else
+                                f"Front: B | Back: A (A->B = {squares_forward_real:.3f} squares, "
+                                f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
+                            )
+                        else:
+                            # B earlier
+                            empties = float(((LA - RB - 1) % N)) if (LB is not None and LA is not None) else 0.0
+                            squares_forward_real = empties
+                            squares_forward_int = int(round(empties))
+                            lead_text = (
+                                "Aligned (A==B)" if squares_forward_int == 0 else
+                                f"Front: A | Back: B (B->A = {squares_forward_real:.3f} squares, "
+                                f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
+                            )
 
                 # dT from EMPTY squares (already minimal by construction)
                 dt_squares_sec = (squares_forward_real * self.led_period_us) / 1e6
@@ -716,9 +674,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     shift_cols_real = x_mod - Wf if x_mod > (Wf / 2.0) else x_mod
                     shift_cols_signed = int(round(shift_cols_real))
 
-                    # Shift only non-config rows; keep bottom config row unshifted
-                    shiftedB_eval = self._roll_columns(maskB_full[:-1, :], shift_cols_signed)
-                    shiftedB_full = np.vstack([shiftedB_eval, maskB_full[-1:, :]])
+                    shiftedB_full = self._roll_columns(maskB_full, shift_cols_signed)
                     # Δt from *real* offset and configured LED period (in microseconds)
                     dt_us_abs = int(abs(shift_cols_real) * self.led_period_us)
                     intervals_offset_real = abs(shift_cols_real)
@@ -732,17 +688,10 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     shift_cols_real = x_mod - Wf if x_mod > (Wf / 2.0) else x_mod
                     shift_cols_signed = int(round(shift_cols_real))
 
-                    # Shift only non-config rows; keep bottom config row unshifted
-                    shiftedB_eval = self._roll_columns(maskB_full[:-1, :], shift_cols_signed)
-                    shiftedB_full = np.vstack([shiftedB_eval, maskB_full[-1:, :]])
+                    shiftedB_full = self._roll_columns(maskB_full, shift_cols_signed)
                     dt_us_abs = ts_delta_us
                     intervals_offset_real = abs(shift_cols_real)
 
-                # Recompute B alignment for visualization using row-major squares
-                # Use content-derived shift when config matches; otherwise timestamp-derived signed intervals
-                align_squares_final = align_squares_content if cfg_ok else int(round(signed_intervals_from_ts_real))
-                shiftedB_eval_vis = self._roll_eval_by_squares(maskB_full, align_squares_final)
-                shiftedB_full = np.vstack([shiftedB_eval_vis, maskB_full[-1:, :]])
                 # Prepare overlay image from full masks (includes bottom row)
                 overlay_img = self._draw_overlay(maskA_full, shiftedB_full)
                 overlay_frame = self._create_imgframe(overlay_img, tsA, max(seqA, seqB))
@@ -752,7 +701,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 # Console log: print timing deltas for quick CLI inspection
                 try:
                     print(
-                        f"LEDGridComparison dT: squares={dt_squares_sec:.6f}s",
+                        f"LEDGridComparison dT: squares={dt_squares_sec:.6f}s | ",
                         flush=True,
                     )
                 except Exception:
@@ -779,9 +728,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     )
                     report_frame = self._create_imgframe(report_img, tsA, max(seqA, seqB))
                     self.out_report.send(report_frame)
-                    # Mark this pair as compared
-                    self._compared_seqA = seqA
-                    self._compared_seqB = seqB
                     continue
 
                 # Exclude bottom configuration row for metrics
@@ -824,9 +770,6 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 )
                 report_frame = self._create_imgframe(report_img, tsA, max(seqA, seqB))
                 self.out_report.send(report_frame)
-                # Mark this pair as compared
-                self._compared_seqA = seqA
-                self._compared_seqB = seqB
 
             except Exception as e:
                 print(f"LEDGridComparison error: {e}")
