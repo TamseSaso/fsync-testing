@@ -642,8 +642,10 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                             f"Front: B | Back: A (A->B = {squares_forward_real:.3f} squares, "
                             f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
                         )
-                        # B is in front; move B backward by the forward gap to align with A
-                        align_squares_content = -squares_forward_int
+                        # B is in front; move B backward so B.first lines up just after A.last
+                        # Use (gap + 1) squares to close the gap completely; if already touching (0), shift 0
+                        align_delta = (squares_forward_int + 1) if squares_forward_int > 0 else 0
+                        align_squares_content = -align_delta
                     else:
                         # Front: A, Back: B (B→A)
                         squares_forward_real = emptiesBA
@@ -653,8 +655,9 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                             f"Front: A | Back: B (B->A = {squares_forward_real:.3f} squares, "
                             f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
                         )
-                        # A is in front; move B forward by the forward gap to align with A
-                        align_squares_content = +squares_forward_int
+                        # A is in front; move B forward so B.first lines up just after A.last (in B→A sense)
+                        align_delta = (squares_forward_int + 1) if squares_forward_int > 0 else 0
+                        align_squares_content = +align_delta
 
                 # dT from EMPTY squares (already minimal by construction)
                 dt_squares_sec = (squares_forward_real * self.led_period_us) / 1e6
