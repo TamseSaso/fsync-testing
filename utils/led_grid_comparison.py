@@ -698,6 +698,14 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 self.out_overlay.send(overlay_frame)
 
                 intervals_offset = abs(shift_cols_signed)
+                # Console log: print timing deltas for quick CLI inspection
+                try:
+                    print(
+                        f"LEDGridComparison dT: squares={dt_squares_sec:.6f}s",
+                        flush=True,
+                    )
+                except Exception:
+                    pass
                 # If config mismatched -> report SKIP and continue
                 if not cfg_ok:
                     report_img = self._draw_report(
