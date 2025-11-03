@@ -11,6 +11,8 @@ SET_MANUAL_EXPOSURE = True  # Set to True to use manual exposure settings
 # DEVICE_INFOS: list[dai.DeviceInfo] = ["IP_MASTER", "IP_SLAVE_1"] # Insert the device IPs here, e.g.:
 DEVICE_INFOS = [dai.DeviceInfo(ip) for ip in ["10.12.211.82", "10.12.211.84"]] # The master camera needs to be first here
 assert len(DEVICE_INFOS) > 1, "At least two devices are required for this example."
+# If SAMPLE is None then it checks every frame for synchronization
+SAMPLE = 10.0
 
 # ---------------------------------------------------------------------------
 # Pipeline creation (unchanged API – only uses TARGET_FPS constant)
@@ -54,7 +56,9 @@ with contextlib.ExitStack() as stack:
     comparisons = []
 
     # Create one global ticker so all devices sample at the same wall-clock time
-    shared_ticker = SharedTicker(period_sec=10.0, start_delay_sec=0.3)
+    shared_ticker = None
+    if SAMPLE is not None:
+        shared_ticker = SharedTicker(period_sec=float(SAMPLE), start_delay_sec=0.3)
 
     for deviceInfo in DEVICE_INFOS:
         pipeline = stack.enter_context(dai.Pipeline(dai.Device(deviceInfo)))
@@ -67,7 +71,7 @@ with contextlib.ExitStack() as stack:
         socket = device.getConnectedCameras()[0]
         pipeline, out_q, node_out = createPipeline(pipeline, socket)
 
-        samplers, warp_nodes, analyzers = deviceAnalyzer(node_out, shared_ticker, sample_interval_seconds = 10.0, threshold_multiplier = 1.75, visualizer = visualizer, device = device, debug = True)
+        samplers, warp_nodes, analyzers = deviceAnalyzer(node_out, shared_ticker, sample_interval_seconds = SAMPLE, threshold_multiplier = 1.75, visualizer = visualizer, device = device, debug = True)
 
         pipelines.append(pipeline)
         device_ids.append(deviceInfo.getXLinkDeviceDesc().name)
@@ -81,8 +85,9 @@ with contextlib.ExitStack() as stack:
         p.start()
         visualizer.registerPipeline(p)
 
-    # Wait until every sampler has received at least one frame, then start the global ticker
-    shared_ticker.start()
+    # Wait until every sampler has received at least one frame; start the global ticker only if enabled
+    if shared_ticker is not None:
+        shared_ticker.start()
     for s in samplers:
         s.wait_first_frame(timeout=None)
 

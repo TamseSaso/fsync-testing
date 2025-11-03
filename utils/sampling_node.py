@@ -51,7 +51,7 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
     Output: dai.ImgFrame (sampled at specified interval)
     """
 
-    def __init__(self, sample_interval_seconds: float = 5.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = None, ptp_slot_phase: float = 0.0) -> None:
+    def __init__(self, sample_interval_seconds: Optional[float] = 5.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = None, ptp_slot_phase: float = 0.0) -> None:
         super().__init__()
         
         self.input = self.createInput()
@@ -71,6 +71,7 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         self.frame_lock = threading.Lock()
         self._bootstrapped = False
         self._target_start_slot: Optional[int] = None
+        self._every_frame_mode = (self.shared_ticker is None and self.ptp_slot_period is None and self.sample_interval is None)
 
     def build(self, frames: dai.Node.Output) -> "FrameSamplingNode":
         frames.link(self.input)
@@ -93,12 +94,14 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         elif self.ptp_slot_period is not None:
             print(f"FrameSamplingNode started with PTP slotting at period {self.ptp_slot_period}s (phase {self.ptp_slot_phase})")
         else:
-            print(f"FrameSamplingNode started with {self.sample_interval}s interval")
-        
-        # Start the sampling timer thread
-        sampling_thread = threading.Thread(target=self._sampling_loop, daemon=True)
-        sampling_thread.start()
-        
+            mode = "EVERY-FRAME mode" if self.sample_interval is None else f"{self.sample_interval}s interval"
+            print(f"FrameSamplingNode started with {mode}")
+
+        # Start the sampling timer thread only if not in every-frame mode
+        if not self._every_frame_mode:
+            sampling_thread = threading.Thread(target=self._sampling_loop, daemon=True)
+            sampling_thread.start()
+
         # Main loop: continuously update latest frame
         while self.isRunning():
             try:
@@ -106,6 +109,10 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                 if frame_msg is not None:
                     with self.frame_lock:
                         self.latest_frame = frame_msg
+
+                # Forward every frame immediately in every-frame mode
+                if self._every_frame_mode and frame_msg is not None:
+                    self.out.send(frame_msg)
 
                 # Bootstrap: in tick-only mode do NOT emit; just mark bootstrapped so first tick can forward latest_frame
                 if frame_msg is not None and not self._bootstrapped and (self.shared_ticker is not None and self.ptp_slot_period is None):
