@@ -13,6 +13,7 @@ DEVICE_INFOS = [dai.DeviceInfo(ip) for ip in ["10.12.211.82", "10.12.211.84"]] #
 assert len(DEVICE_INFOS) > 1, "At least two devices are required for this example."
 # If SAMPLE is None then it checks every frame for synchronization
 SAMPLE = None
+DEBUG = False
 
 # ---------------------------------------------------------------------------
 # Pipeline creation (unchanged API – only uses TARGET_FPS constant)
@@ -71,14 +72,14 @@ with contextlib.ExitStack() as stack:
         socket = device.getConnectedCameras()[0]
         pipeline, out_q, node_out = createPipeline(pipeline, socket)
 
-        samplers, warp_nodes, analyzers = deviceAnalyzer(node_out, shared_ticker, sample_interval_seconds = SAMPLE, threshold_multiplier = 1.75, visualizer = visualizer, device = device, debug = True)
+        samplers, warp_nodes, analyzers = deviceAnalyzer(node_out, shared_ticker, sample_interval_seconds = SAMPLE, threshold_multiplier = 1.75, visualizer = visualizer, device = device, debug = DEBUG)
 
         pipelines.append(pipeline)
         device_ids.append(deviceInfo.getXLinkDeviceDesc().name)
 
 
     # Register comparison topics before starting pipelines (required by RemoteConnection)
-    deviceComparison(analyzers, warp_nodes, comparisons, SYNC_THRESHOLD_SEC, visualizer=visualizer, debug = True)
+    deviceComparison(analyzers, warp_nodes, comparisons, SYNC_THRESHOLD_SEC, visualizer=visualizer, debug = DEBUG)
 
     # Register pipelines with the visualizer before starting them, so topics can be created.
     for p in pipelines:

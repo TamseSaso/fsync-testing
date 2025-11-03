@@ -50,6 +50,7 @@ def deviceAnalyzer(
     # LED grid analysis
     led_analyzer = LEDGridAnalyzer(
         threshold_multiplier=threshold_multiplier,
+        debug=debug,
     ).build(warp_node.out)
     analyzers.append(led_analyzer)
 
