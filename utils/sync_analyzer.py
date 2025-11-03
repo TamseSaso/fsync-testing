@@ -62,7 +62,7 @@ def deviceAnalyzer(
 
     return samplers, warp_nodes, analyzers
 
-def deviceComparison(analyzers, warp_nodes, comparisons, sync_threshold_sec, grid_size=32, output_size=(1024, 1024)):
+def deviceComparison(analyzers, warp_nodes, comparisons, sync_threshold_sec, grid_size=32, output_size=(1024, 1024), visualizer=None):
     """
     If at least two analyzers exist, create an LEDGridComparison node, bind it to the
     first pipeline via a lightweight tick (warp_nodes[0].out), wire its inputs to the
@@ -78,5 +78,8 @@ def deviceComparison(analyzers, warp_nodes, comparisons, sync_threshold_sec, gri
         comparisons.append(led_cmp)
         # Wire analyzers directly to the new comparison node we just created
         led_cmp.set_queues(analyzers[0].out, analyzers[1].out)
+
+        visualizer.addTopic("LED Sync Overlay", led_cmp.out_overlay, "images")
+        visualizer.addTopic("LED Sync Report", led_cmp.out_report, "images")
         return led_cmp
     return None

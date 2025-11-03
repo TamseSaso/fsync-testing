@@ -110,7 +110,7 @@ with contextlib.ExitStack() as stack:
 
 
     # Register comparison topics before starting pipelines (required by RemoteConnection)
-    deviceComparison(analyzers, warp_nodes, comparisons, SYNC_THRESHOLD_SEC)
+    deviceComparison(analyzers, warp_nodes, comparisons, SYNC_THRESHOLD_SEC, visualizer=visualizer)
 
     # Register pipelines with the visualizer before starting them, so topics can be created.
     for p in pipelines:
