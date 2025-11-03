@@ -154,6 +154,24 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         # positive cols -> shift right (later in time)
         return np.roll(mask, shift=cols, axis=1)
 
+    def _roll_eval_by_squares(self, mask_full: np.ndarray, signed_squares: int) -> np.ndarray:
+        """Roll the eval region (exclude bottom config row) by a signed number of
+        row-major steps (left→right, then down). Positive = forward in time.
+        Returns the shifted eval mask (top H rows).
+        """
+        eval_in = mask_full[:-1, :]
+        H, W = eval_in.shape
+        if H == 0 or W == 0:
+            return eval_in
+        N = H * W
+        s = int(signed_squares)
+        s_mod = ((s % N) + N) % N
+        row_shift = s_mod // W
+        col_shift = s_mod % W
+        out = np.roll(eval_in, shift=row_shift, axis=0)
+        out = np.roll(out, shift=col_shift, axis=1)
+        return out
+
     def _create_imgframe(self, bgr: np.ndarray, ts, seq: int) -> dai.ImgFrame:
         img = dai.ImgFrame()
         img.setType(dai.ImgFrame.Type.BGR888i)
@@ -545,113 +563,53 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 squares_forward_real = 0.0
                 squares_forward_int = 0
                 lead_text = "Aligned (A==B)"
+                align_squares_content = 0  # signed squares to move B to A for overlay when config matches
 
-                if hasA and hasB and N > 0:
-                    if intervalsA == intervalsB and (rowA_top is not None) and (rowB_top is not None):
-                        # Same cycle: choose the lit band closer to the top
-                        if rowA_top < rowB_top:
-                            # A is earlier; count EMPTY cells from end(A) to start(B)
-                            # Treat touching/overlap as zero-gap; otherwise circular forward gap from A.end to B.start
-                            if (LA is not None and RA is not None and LB is not None and RB is not None):
-                                segA = [(LA, RA)] if LA <= RA else [(LA, N - 1), (0, RA)]
-                                segB = [(LB, RB)] if LB <= RB else [(LB, N - 1), (0, RB)]
-                                overlaps = any(not (a1 < b0 or b1 < a0) for (a0, a1) in segA for (b0, b1) in segB)
-                                if overlaps:
-                                    empties = 0.0
-                                else:
-                                    empties = float((LB - RA - 1) % N)
-                            else:
-                                empties = 0.0
-                            squares_forward_real = empties
-                            squares_forward_int = int(round(empties))
-                            lead_text = (
-                                "Aligned (A==B)" if squares_forward_int == 0 else
-                                f"Front: B | Back: A (A->B = {squares_forward_real:.3f} squares, "
-                                f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
-                            )
-                        elif rowB_top < rowA_top:
-                            # B is earlier
-                            # Treat touching/overlap as zero-gap; otherwise circular forward gap from B.end to A.start
-                            if (LA is not None and RA is not None and LB is not None and RB is not None):
-                                segA = [(LA, RA)] if LA <= RA else [(LA, N - 1), (0, RA)]
-                                segB = [(LB, RB)] if LB <= RB else [(LB, N - 1), (0, RB)]
-                                overlaps = any(not (a1 < b0 or b1 < a0) for (a0, a1) in segA for (b0, b1) in segB)
-                                if overlaps:
-                                    empties = 0.0
-                                else:
-                                    empties = float((LA - RB - 1) % N)
-                            else:
-                                empties = 0.0
-                            squares_forward_real = empties
-                            squares_forward_int = int(round(empties))
-                            lead_text = (
-                                "Aligned (A==B)" if squares_forward_int == 0 else
-                                f"Front: A | Back: B (B->A = {squares_forward_real:.3f} squares, "
-                                f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
-                            )
-                        else:
-                            # Same top row → earlier is the one with smaller leading index
-                            if LA <= LB:
-                                # Treat touching/overlap as zero-gap; otherwise circular forward gap from A.end to B.start
-                                if (LA is not None and RA is not None and LB is not None and RB is not None):
-                                    segA = [(LA, RA)] if LA <= RA else [(LA, N - 1), (0, RA)]
-                                    segB = [(LB, RB)] if LB <= RB else [(LB, N - 1), (0, RB)]
-                                    overlaps = any(not (a1 < b0 or b1 < a0) for (a0, a1) in segA for (b0, b1) in segB)
-                                    if overlaps:
-                                        empties = 0.0
-                                    else:
-                                        empties = float((LB - RA - 1) % N)
-                                else:
-                                    empties = 0.0
-                                squares_forward_real = empties
-                                squares_forward_int = int(round(empties))
-                                lead_text = (
-                                    "Aligned (A==B)" if squares_forward_int == 0 else
-                                    f"Front: B | Back: A (A->B = {squares_forward_real:.3f} squares, "
-                                    f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
-                                )
-                            else:
-                                # Treat touching/overlap as zero-gap; otherwise circular forward gap from B.end to A.start
-                                if (LA is not None and RA is not None and LB is not None and RB is not None):
-                                    segA = [(LA, RA)] if LA <= RA else [(LA, N - 1), (0, RA)]
-                                    segB = [(LB, RB)] if LB <= RB else [(LB, N - 1), (0, RB)]
-                                    overlaps = any(not (a1 < b0 or b1 < a0) for (a0, a1) in segA for (b0, b1) in segB)
-                                    if overlaps:
-                                        empties = 0.0
-                                    else:
-                                        empties = float((LA - RB - 1) % N)
-                                else:
-                                    empties = 0.0
-                                squares_forward_real = empties
-                                squares_forward_int = int(round(empties))
-                                lead_text = (
-                                    "Aligned (A==B)" if squares_forward_int == 0 else
-                                    f"Front: A | Back: B (B->A = {squares_forward_real:.3f} squares, "
-                                    f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
-                                )
+                # Frontier-based empty-squares calculation (row-major sweep) using intervals
+                if hasA and hasB and N > 0 and idxsA.size > 0 and idxsB.size > 0:
+                    # First/last lit indices along the sweep (exclude config row)
+                    firstA = int(idxsA.min()); lastA = int(idxsA.max())
+                    firstB = int(idxsB.min()); lastB = int(idxsB.max())
+
+                    # Absolute (unwrapped) positions using the lap counters
+                    PA_first = int(intervalsA) * N + firstA
+                    PA_last  = int(intervalsA) * N + lastA
+                    PB_first = int(intervalsB) * N + firstB
+                    PB_last  = int(intervalsB) * N + lastB
+
+                    # Normalize forward gaps into [0, N)
+                    def norm_gap(d: int) -> int:
+                        return ((d % N) + N) % N
+
+                    # A behind → gap from A.last to B.first
+                    gapAB = norm_gap(PB_first - PA_last)
+                    emptiesAB = float(max(0, gapAB - 1))
+                    # B behind → gap from B.last to A.first
+                    gapBA = norm_gap(PA_first - PB_last)
+                    emptiesBA = float(max(0, gapBA - 1))
+
+                    if emptiesAB <= emptiesBA:
+                        # Front: B, Back: A (A→B)
+                        squares_forward_real = emptiesAB
+                        squares_forward_int = int(round(squares_forward_real))
+                        lead_text = (
+                            "Aligned (A==B)" if squares_forward_int == 0 else
+                            f"Front: B | Back: A (A->B = {squares_forward_real:.3f} squares, "
+                            f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
+                        )
+                        # B is in front; move B backward by the forward gap to align with A
+                        align_squares_content = -squares_forward_int
                     else:
-                        # Intervals differ: earlier = smaller intervals value
-                        # Count EMPTY cells modulo one sweep from earlier.END to later.START
-                        if int(intervalsA) < int(intervalsB):
-                            # A earlier
-                            empties = float(((LB - RA - 1) % N)) if (LA is not None and LB is not None) else 0.0
-                            squares_forward_real = empties
-                            squares_forward_int = int(round(empties))
-                            lead_text = (
-                                "Aligned (A==B)" if squares_forward_int == 0 else
-                                f"Front: B | Back: A (A->B = {squares_forward_real:.3f} squares, "
-                                f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
-                            )
-                        else:
-                            # B earlier
-                            empties = float(((LA - RB - 1) % N)) if (LB is not None and LA is not None) else 0.0
-                            squares_forward_real = empties
-                            squares_forward_int = int(round(empties))
-                            lead_text = (
-                                "Aligned (A==B)" if squares_forward_int == 0 else
-                                f"Front: A | Back: B (B->A = {squares_forward_real:.3f} squares, "
-                                f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
-                            )
+                        # Front: A, Back: B (B→A)
+                        squares_forward_real = emptiesBA
+                        squares_forward_int = int(round(squares_forward_real))
+                        lead_text = (
+                            "Aligned (A==B)" if squares_forward_int == 0 else
+                            f"Front: A | Back: B (B->A = {squares_forward_real:.3f} squares, "
+                            f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
+                        )
+                        # A is in front; move B forward by the forward gap to align with A
+                        align_squares_content = +squares_forward_int
 
                 # dT from EMPTY squares (already minimal by construction)
                 dt_squares_sec = (squares_forward_real * self.led_period_us) / 1e6
@@ -732,6 +690,11 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     dt_us_abs = ts_delta_us
                     intervals_offset_real = abs(shift_cols_real)
 
+                # Recompute B alignment for visualization using row-major squares
+                # Use content-derived shift when config matches; otherwise timestamp-derived signed intervals
+                align_squares_final = align_squares_content if cfg_ok else int(round(signed_intervals_from_ts_real))
+                shiftedB_eval_vis = self._roll_eval_by_squares(maskB_full, align_squares_final)
+                shiftedB_full = np.vstack([shiftedB_eval_vis, maskB_full[-1:, :]])
                 # Prepare overlay image from full masks (includes bottom row)
                 overlay_img = self._draw_overlay(maskA_full, shiftedB_full)
                 overlay_frame = self._create_imgframe(overlay_img, tsA, max(seqA, seqB))
