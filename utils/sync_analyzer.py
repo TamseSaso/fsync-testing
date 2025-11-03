@@ -2,16 +2,20 @@ from .sampling_node import FrameSamplingNode, SharedTicker
 from .apriltag_warp_node import AprilTagWarpNode
 from .led_grid_analyzer import LEDGridAnalyzer
 from .led_grid_comparison import LEDGridComparison
+from .led_grid_visualizer import LEDGridVisualizer
 
 samplers = []
 analyzers = []
 warp_nodes = []
+visualizers = []
 
 def deviceAnalyzer(
     node_out,
     shared_ticker,
     sample_interval_seconds: float = 10.0,
     threshold_multiplier: float = 1.75,
+    visualizer = None,
+    device = None,
     warp_size: tuple[int, int] = (1024, 1024),
 ):
     """
@@ -47,6 +51,14 @@ def deviceAnalyzer(
         threshold_multiplier=threshold_multiplier,
     ).build(warp_node.out)
     analyzers.append(led_analyzer)
+
+    led_visualizer = LEDGridVisualizer(output_size=(1024, 1024)).build(led_analyzer.out)
+    visualizers.append(led_visualizer)
+
+    suffix = f" [{device.getDeviceId()}]"
+    visualizer.addTopic("Sample" + suffix, sampler.out, "images")
+    visualizer.addTopic("Warped Sample" + suffix, warp_node.out, "images")
+    visualizer.addTopic("LED Grid" + suffix, led_visualizer.out, "images")
 
     return samplers, warp_nodes, analyzers
 
