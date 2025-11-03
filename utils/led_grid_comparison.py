@@ -3,7 +3,9 @@ import numpy as np
 import depthai as dai
 from typing import Optional, Tuple
 import time as _t
+
 from datetime import timedelta as _td
+from collections import deque
 
 
 class LEDGridComparison(dai.node.ThreadedHostNode):
@@ -92,6 +94,11 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         # Track last compared sequence numbers so we only compare when BOTH sides updated
         self._compared_seqA = -1
         self._compared_seqB = -1
+        # Small buffers to tolerate skipped/misaligned frames and always pair latest-to-latest
+        self._bufA = deque(maxlen=8)
+        self._bufB = deque(maxlen=8)
+        # Throttle for "waiting" overlay/report updates when one side is missing
+        self._last_waiting_time = 0.0
 
         # Host-side queues are provided from analyzer node outputs
         self._qA = None
@@ -153,6 +160,20 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
             return mask
         # positive cols -> shift right (later in time)
         return np.roll(mask, shift=cols, axis=1)
+
+    def _pop_latest_pair(self):
+        """
+        Return the latest (A, B) parsed tuples if both sides have at least one item.
+        This pairs the most recent frames on both sides, dropping any older ones.
+        Each tuple layout: (grid, avg, mult, speed, intervals, ts, seq)
+        """
+        if len(self._bufA) == 0 or len(self._bufB) == 0:
+            return None
+        a = self._bufA[-1]
+        b = self._bufB[-1]
+        self._bufA.clear()
+        self._bufB.clear()
+        return (a, b)
 
     def _create_imgframe(self, bgr: np.ndarray, ts, seq: int) -> dai.ImgFrame:
         img = dai.ImgFrame()
@@ -439,10 +460,18 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 parsedA = parsedB = False
                 try:
                     if bufA is not None:
-                        self._lastA = self._parse_buffer(bufA)
+                        parsed = self._parse_buffer(bufA)
+                        self._lastA = parsed
+                        # Append only if this sequence is new (avoid duplicates)
+                        if len(self._bufA) == 0 or parsed[6] != self._bufA[-1][6]:
+                            self._bufA.append(parsed)
                         parsedA = True
                     if bufB is not None:
-                        self._lastB = self._parse_buffer(bufB)
+                        parsed = self._parse_buffer(bufB)
+                        self._lastB = parsed
+                        # Append only if this sequence is new (avoid duplicates)
+                        if len(self._bufB) == 0 or parsed[6] != self._bufB[-1][6]:
+                            self._bufB.append(parsed)
                         parsedB = True
                 except Exception as e:
                     print(f"Comparison parse error: {e}")
@@ -477,6 +506,12 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                         ts_use, seq_use = ts, seq
                         speed_use, intervals_use = speed, intervals
 
+                    # Throttle UI updates while waiting for the other side
+                    now = _t.time()
+                    if now - self._last_waiting_time <= 0.5:
+                        _t.sleep(0.001)
+                        continue
+                    self._last_waiting_time = now
                     # Full-size overlay (include config row) showing one side vs empty
                     overlay_img = self._draw_overlay(mask_have if side_have=='A' else mask_missing,
                                                      mask_have if side_have=='B' else mask_missing)
@@ -489,14 +524,12 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     _t.sleep(0.001)
                     continue
 
-                # From here on, both sides have some state (may be updated this tick)
-                gridA, avgA, multA, speedA, intervalsA, tsA, seqA = self._lastA
-                gridB, avgB, multB, speedB, intervalsB, tsB, seqB = self._lastB
-
-                # Wait until BOTH sides have new frames since the last comparison to avoid double-printing
-                if not ((seqA != self._compared_seqA) and (seqB != self._compared_seqB)):
+                # Pair the most recent frames from both sides to tolerate skipped frames
+                pair = self._pop_latest_pair()
+                if pair is None:
                     _t.sleep(0.0005)
                     continue
+                (gridA, avgA, multA, speedA, intervalsA, tsA, seqA), (gridB, avgB, multB, speedB, intervalsB, tsB, seqB) = pair
 
                 # Config check (strict match)
                 cfg_ok = (intervalsA == intervalsB)
