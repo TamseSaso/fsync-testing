@@ -358,14 +358,15 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         # Config
         cfg_str = f"Speed={speed}, Intervals={int(intervals)}"
         if cfg_ok:
-            row(68, "Config:", cfg_str + "  -> MATCH", (0, 255, 0))
+            tol_tag = " (±1 tol)" if abs(int(intervals_diff_signed)) == 1 else ""
+            row(68, "Config:", cfg_str + f"  -> MATCH{tol_tag}", (0, 255, 0))
         else:
             row(68, "Config:", cfg_str + "  -> MISMATCH", (0, 165, 255))
             row(92, "Note:", "Skipping placement comparison due to config mismatch.", (0, 165, 255))
 
         # Timing block
         row(118, "Timing:", f"dT (from squares) = {dt_squares_sec:.6f} s   |   LED period = {int(self.led_period_us)} us")
-        row(142, "Shift:", f"{squares_forward_real:.3f} squares A->B (int {squares_forward_int}) | cols: {shift_cols_real:+.3f} (int {shift_cols}) | Delta intervals (B - A) = {int(intervals_diff_signed)}")
+        row(142, "Shift:", f"{squares_forward_real:.3f} squares A(last)->B(last) (int {squares_forward_int}) | cols: {shift_cols_real:+.3f} (int {shift_cols}) | Delta intervals (B - A) = {int(intervals_diff_signed)}")
         row(166, "Order:", lead_text)
 
         # Metrics block (excludes config row)
@@ -783,7 +784,13 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 iou = (overlap / union) if union > 0 else 0.0
 
                 dt_seconds = dt_squares_sec
-                time_pass = (self.sync_threshold_sec is not None and dt_squares_sec <= self.sync_threshold_sec)
+                intervals_within_one = (abs(intervals_diff_signed) <= 1)
+                if intervals_within_one:
+                    # For ±1 intervals, placement overlap isn't meaningful; rely on distance.
+                    # If no threshold is configured, accept as PASS (per requirement that only distance matters).
+                    time_pass = (dt_squares_sec <= self.sync_threshold_sec) if (self.sync_threshold_sec is not None) else True
+                else:
+                    time_pass = (self.sync_threshold_sec is not None and dt_squares_sec <= self.sync_threshold_sec)
                 passed = time_pass or (min(recallA, recallB) >= self.pass_ratio)
 
                 # Report
