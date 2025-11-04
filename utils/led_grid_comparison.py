@@ -601,6 +601,10 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 squares_forward_int = 0
                 lead_text = "Aligned (A==B)"
 
+                # Initialize idxA and idxB for use in alignment logic
+                idxA = None
+                idxB = None
+
                 if hasA and hasB and N > 0:
                     idxA = self._last_lit_index_top_row(maskA_full)
                     idxB = self._last_lit_index_top_row(maskB_full)
@@ -652,6 +656,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 # Decide whether IoU-based shift is meaningful: require both sides have some LEDs and config match
                 use_iou_alignment = (onA_full_raw > 0 and onB_full_raw > 0 and (intervalsA == intervalsB))
 
+                used_ts_fallback = False
+
                 if use_iou_alignment:
                     # Estimate best column alignment by scoring IoU across shifts (robust to unsynced clocks)
                     A_eval = _A_eval
@@ -690,18 +696,35 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     dt_us_abs = int(abs(shift_cols_real) * self.led_period_us)
                     intervals_offset_real = abs(shift_cols_real)
                 else:
-                    # Fallback: use host timestamps to estimate real interval offset and direction
-                    shift_cols_real = signed_intervals_from_ts_real
-                    # Wrap to the shortest roll in [-W/2, W/2]
-                    Wf = float(W)
-                    x = shift_cols_real
-                    x_mod = ((x % Wf) + Wf) % Wf
-                    shift_cols_real = x_mod - Wf if x_mod > (Wf / 2.0) else x_mod
-                    shift_cols_signed = int(round(shift_cols_real))
+                    # Prefer last-lit top-row columns even if intervals mismatch.
+                    if (idxA is not None) and (idxB is not None):
+                        # Align B so its last-lit column matches A's last-lit column
+                        colA = int(idxA % W)
+                        colB = int(idxB % W)
+                        x = float(colA - colB)
+                        Wf = float(W)
+                        x_mod = ((x % Wf) + Wf) % Wf
+                        shift_cols_real = x_mod - Wf if x_mod > (Wf / 2.0) else x_mod
+                        shift_cols_signed = int(round(shift_cols_real))
 
-                    shiftedB_full = self._roll_columns(maskB_full, shift_cols_signed)
-                    dt_us_abs = ts_delta_us
-                    intervals_offset_real = abs(shift_cols_real)
+                        shiftedB_full = self._roll_columns(maskB_full, shift_cols_signed)
+                        # Δt derived from column offset (for the "cols" display)
+                        dt_us_abs = int(abs(shift_cols_real) * self.led_period_us)
+                        intervals_offset_real = abs(shift_cols_real)
+                    else:
+                        # Fallback: use host timestamps to estimate real interval offset and direction
+                        used_ts_fallback = True
+                        shift_cols_real = signed_intervals_from_ts_real
+                        # Wrap to the shortest roll in [-W/2, W/2]
+                        Wf = float(W)
+                        x = shift_cols_real
+                        x_mod = ((x % Wf) + Wf) % Wf
+                        shift_cols_real = x_mod - Wf if x_mod > (Wf / 2.0) else x_mod
+                        shift_cols_signed = int(round(shift_cols_real))
+
+                        shiftedB_full = self._roll_columns(maskB_full, shift_cols_signed)
+                        dt_us_abs = ts_delta_us
+                        intervals_offset_real = abs(shift_cols_real)
 
                 # Prepare overlay image from full masks (includes bottom row)
                 overlay_img = self._draw_overlay(maskA_full, shiftedB_full)
@@ -732,7 +755,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                         intervals_diff_signed=intervals_diff_signed,
                         intervals_offset=intervals_offset,
                         intervals_offset_real=intervals_offset_real,
-                        lead_text=lead_text + (" (from TS)" if not use_iou_alignment else ""),
+                        lead_text=lead_text + (" (from TS)" if used_ts_fallback else ""),
                         onA=0, onB=0, overlap=0,
                         recallA=0.0, recallB=0.0, iou=0.0,
                         passed=None
