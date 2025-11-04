@@ -553,8 +553,9 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                     continue
                 (gridA, avgA, multA, speedA, intervalsA, tsA, seqA), (gridB, avgB, multB, speedB, intervalsB, tsB, seqB) = pair
 
-                # Config check (strict match)
-                cfg_ok = (intervalsA == intervalsB)
+                # Config check with ±1 tolerance on intervals
+                intervals_diff_signed = self._unwrap16(int(intervalsB) - int(intervalsA))
+                cfg_ok = (abs(intervals_diff_signed) <= 1)
 
                 # Build masks using each stream's dynamic threshold
                 thrA = self._dynamic_threshold(avgA, multA)
@@ -635,8 +636,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 # dT from EMPTY squares (already minimal by construction)
                 dt_squares_sec = (squares_forward_real * self.led_period_us) / 1e6
 
-                # Compute signed intervals difference (B - A)
-                intervals_diff_signed = self._unwrap16(int(intervalsB) - int(intervalsA))
+                # Compute signed intervals difference (B - A) — already computed above for cfg_ok
+                # (keep variable available for reporting)
 
                 # --- Timestamp-based timing (fallback) and degenerate detection ---
                 # Exclude bottom config row for activity check
