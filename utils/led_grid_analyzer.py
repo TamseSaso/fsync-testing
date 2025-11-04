@@ -11,7 +11,7 @@ class LEDGridAnalyzer(dai.node.ThreadedHostNode):
     Output: dai.Buffer containing grid state data
     """
 
-    def __init__(self, grid_size: int = 32, threshold_multiplier: float = 1.7, bottom_row_threshold_scale: float = 0.9, debug: bool = False) -> None:
+    def __init__(self, grid_size: int = 32, threshold_multiplier: float = 1.7, bottom_row_threshold_scale: float = 0.85, debug: bool = False) -> None:
         super().__init__()
         
         self.input = self.createInput()
