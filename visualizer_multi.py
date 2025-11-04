@@ -61,7 +61,7 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
         .build(socket, sensorFps=TARGET_FPS)
     )
     node_out = camRgb.requestOutput(
-        (640, 480), dai.ImgFrame.Type.NV12, dai.ImgResizeMode.STRETCH
+        (1024, 720), dai.ImgFrame.Type.NV12, dai.ImgResizeMode.STRETCH
     )
     manip = pipeline.create(dai.node.ImageManip)
     manip.setMaxOutputFrameSize(4 * 1024 * 1024)
