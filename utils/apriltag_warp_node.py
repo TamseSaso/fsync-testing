@@ -128,7 +128,7 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         # Margins/paddings tweak the final crop to match panel framing
         self.margin = 0.01
         self.padding_left = -0.008
-        self.padding_right = -0.00
+        self.padding_right = -0.005
         self.bottom_right_y_offset = 0.016
         self.bottom_y_offset = 0.01
 
