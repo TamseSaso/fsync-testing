@@ -71,18 +71,7 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         self.frame_lock = threading.Lock()
         self._bootstrapped = False
         self._target_start_slot: Optional[int] = None
-        # Demand-driven mode: when no ticker/PTP and sample_interval_seconds is None,
-        # we will emit the latest frame only after downstream has processed the previous one.
-        self._demand_mode = (self.shared_ticker is None and self.ptp_slot_period is None and self.sample_interval is None)
-        if self._demand_mode:
-            # Make the output blocking with a queue size of 1 so send() blocks
-            # until the downstream consumer pulls the previous frame.
-            try:
-                self.out.setQueueSize(1)
-                self.out.setBlocking(True)
-            except Exception:
-                # If the backend doesn't support these, we'll still throttle in the loop.
-                pass
+        self._every_frame_mode = (self.shared_ticker is None and self.ptp_slot_period is None and self.sample_interval is None)
 
     def build(self, frames: dai.Node.Output) -> "FrameSamplingNode":
         frames.link(self.input)
@@ -104,14 +93,14 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
             print("FrameSamplingNode started with shared global ticker")
         elif self.ptp_slot_period is not None:
             print(f"FrameSamplingNode started with PTP slotting at period {self.ptp_slot_period}s (phase {self.ptp_slot_phase})")
-        elif self.sample_interval is None:
-            print("FrameSamplingNode started in DEMAND-DRIVEN latest-frame mode")
         else:
-            print(f"FrameSamplingNode started with {self.sample_interval}s interval")
+            mode = "EVERY-FRAME mode" if self.sample_interval is None else f"{self.sample_interval}s interval"
+            print(f"FrameSamplingNode started with {mode}")
 
-        # Start the sampling thread (handles all modes)
-        sampling_thread = threading.Thread(target=self._sampling_loop, daemon=True)
-        sampling_thread.start()
+        # Start the sampling timer thread only if not in every-frame mode
+        if not self._every_frame_mode:
+            sampling_thread = threading.Thread(target=self._sampling_loop, daemon=True)
+            sampling_thread.start()
 
         # Main loop: continuously update latest frame
         while self.isRunning():
@@ -120,6 +109,10 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                 if frame_msg is not None:
                     with self.frame_lock:
                         self.latest_frame = frame_msg
+
+                # Forward every frame immediately in every-frame mode
+                if self._every_frame_mode and frame_msg is not None:
+                    self.out.send(frame_msg)
 
                 # Bootstrap: in tick-only mode do NOT emit; just mark bootstrapped so first tick can forward latest_frame
                 if frame_msg is not None and not self._bootstrapped and (self.shared_ticker is not None and self.ptp_slot_period is None):
@@ -130,27 +123,6 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
 
     def _sampling_loop(self) -> None:
         while self.isRunning():
-            # 0) Demand-driven mode: emit latest frame once the previous one is processed
-            if self._demand_mode:
-                with self.frame_lock:
-                    frame = self.latest_frame
-                if frame is not None:
-                    try:
-                        self.out.send(frame)
-                        try:
-                            seq = frame.getSequenceNum()
-                            print(f"Frame sampled on demand (seq={seq})")
-                        except Exception:
-                            print("Frame sampled on demand")
-                    except Exception as e:
-                        print(f"FrameSamplingNode demand send error: {e}")
-                    # Small sleep to avoid a tight loop on backends without blocking outputs
-                    time.sleep(0.0005)
-                else:
-                    # No frame yet, avoid busy spinning
-                    time.sleep(0.001)
-                continue
-
             # 1) Shared global ticker mode
             if self.shared_ticker is not None:
                 self._last_tick_idx = self.shared_ticker.wait_next_tick(self._last_tick_idx)

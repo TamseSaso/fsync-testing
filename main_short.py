@@ -12,7 +12,7 @@ SET_MANUAL_EXPOSURE = True  # Set to True to use manual exposure settings
 DEVICE_INFOS = [dai.DeviceInfo(ip) for ip in ["10.12.211.82", "10.12.211.84"]] # The master camera needs to be first here
 assert len(DEVICE_INFOS) > 1, "At least two devices are required for this example."
 # If SAMPLE is None then it checks every frame for synchronization
-SAMPLE = None
+SAMPLE = 0.1
 DEBUG = False
 
 # ---------------------------------------------------------------------------
