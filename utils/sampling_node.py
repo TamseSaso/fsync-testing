@@ -51,7 +51,7 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
     Output: dai.ImgFrame (sampled at specified interval)
     """
 
-    def __init__(self, sample_interval_seconds: Optional[float] = 5.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = None, ptp_slot_phase: float = 0.0) -> None:
+    def __init__(self, sample_interval_seconds: Optional[float] = 5.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = None, ptp_slot_phase: float = 0.0, debug: bool = False) -> None:
         super().__init__()
         
         self.input = self.createInput()
@@ -72,6 +72,7 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         self._bootstrapped = False
         self._target_start_slot: Optional[int] = None
         self._every_frame_mode = (self.shared_ticker is None and self.ptp_slot_period is None and self.sample_interval is None)
+        self.debug = bool(debug)
 
     def build(self, frames: dai.Node.Output) -> "FrameSamplingNode":
         frames.link(self.input)
@@ -129,7 +130,8 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                 with self.frame_lock:
                     if self.latest_frame is not None:
                         self.out.send(self.latest_frame)
-                        print(f"Frame sampled on global tick #{self._last_tick_idx} at {time.monotonic():.3f}s")
+                        if self.debug:
+                            print(f"Frame sampled on global tick #{self._last_tick_idx} at {time.monotonic():.3f}s")
                 continue
 
             # 2) PTP-slotted mode (device timestamps aligned by PTP)

@@ -39,6 +39,7 @@ def deviceAnalyzer(
     sampler = FrameSamplingNode(
         sample_interval_seconds=sample_interval_seconds,
         shared_ticker=shared_ticker,
+        debug=debug,
     ).build(node_out)
     samplers.append(sampler)
 
