@@ -249,6 +249,28 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
             return None
         idx_int, idx_real = best_idx
         return int(idx_int), float(idx_real)
+
+    def _last_lit_index_top_row(self, mask_full: np.ndarray) -> Optional[int]:
+        """
+        Return the flattened row-major index (excluding bottom config row) of the
+        rightmost ON pixel on the top-most active row. If no ON pixels exist,
+        returns None.
+        """
+        if mask_full.ndim != 2:
+            return None
+        if mask_full.shape[0] < 2 or mask_full.shape[1] < 1:
+            return None
+        eval_mask = mask_full[:-1, :]
+        rows = np.flatnonzero(np.any(eval_mask, axis=1))
+        if rows.size == 0:
+            return None
+        r = int(rows.min())
+        cols = np.flatnonzero(eval_mask[r, :])
+        if cols.size == 0:
+            return None
+        c_right = int(cols[-1])
+        W = eval_mask.shape[1]
+        return int(r * W + c_right)
     def _draw_overlay(self, maskA: np.ndarray, maskB: np.ndarray) -> np.ndarray:
         """
         Color code per cell:
@@ -580,72 +602,28 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 lead_text = "Aligned (A==B)"
 
                 if hasA and hasB and N > 0:
-                    if intervalsA == intervalsB and (rowA_top is not None) and (rowB_top is not None):
-                        # Same cycle: choose the lit band closer to the top
-                        if rowA_top < rowB_top:
-                            # A is earlier; count EMPTY cells from end(A) to start(B)
-                            gap = LB - RA - 1
-                            empties = float(gap) if gap > 0 else 0.0
-                            squares_forward_real = empties
-                            squares_forward_int = int(round(empties))
+                    idxA = self._last_lit_index_top_row(maskA_full)
+                    idxB = self._last_lit_index_top_row(maskB_full)
+                    if (idxA is not None) and (idxB is not None):
+                        # Forward distances around the raster
+                        diff_AB = (idxB - idxA) % N  # distance from A's last lit to B's last lit
+                        diff_BA = (idxA - idxB) % N  # distance from B's last lit to A's last lit
+
+                        if diff_AB == 0:
+                            squares_forward_real = 0.0
+                            squares_forward_int = 0
+                            lead_text = "Aligned (A==B)"
+                        elif diff_AB <= diff_BA:
+                            squares_forward_real = float(diff_AB)
+                            squares_forward_int = int(diff_AB)
                             lead_text = (
-                                "Aligned (A==B)" if squares_forward_int == 0 else
-                                f"Front: B | Back: A (A->B = {squares_forward_real:.3f} squares, "
-                                f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
-                            )
-                        elif rowB_top < rowA_top:
-                            # B is earlier
-                            gap = LA - RB - 1
-                            empties = float(gap) if gap > 0 else 0.0
-                            squares_forward_real = empties
-                            squares_forward_int = int(round(empties))
-                            lead_text = (
-                                "Aligned (A==B)" if squares_forward_int == 0 else
-                                f"Front: A | Back: B (B->A = {squares_forward_real:.3f} squares, "
-                                f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
-                            )
-                        else:
-                            # Same top row → earlier is the one with smaller leading index
-                            if LA <= LB:
-                                gap = LB - RA - 1
-                                empties = float(gap) if gap > 0 else 0.0
-                                squares_forward_real = empties
-                                squares_forward_int = int(round(empties))
-                                lead_text = (
-                                    "Aligned (A==B)" if squares_forward_int == 0 else
-                                    f"Front: B | Back: A (A->B = {squares_forward_real:.3f} squares, "
-                                    f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
-                                )
-                            else:
-                                gap = LA - RB - 1
-                                empties = float(gap) if gap > 0 else 0.0
-                                squares_forward_real = empties
-                                squares_forward_int = int(round(empties))
-                                lead_text = (
-                                    "Aligned (A==B)" if squares_forward_int == 0 else
-                                    f"Front: A | Back: B (B->A = {squares_forward_real:.3f} squares, "
-                                    f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
-                                )
-                    else:
-                        # Intervals differ: earlier = smaller intervals value
-                        # Count EMPTY cells modulo one sweep from earlier.END to later.START
-                        if int(intervalsA) < int(intervalsB):
-                            # A earlier
-                            empties = float(((LB - RA - 1) % N)) if (LA is not None and LB is not None) else 0.0
-                            squares_forward_real = empties
-                            squares_forward_int = int(round(empties))
-                            lead_text = (
-                                "Aligned (A==B)" if squares_forward_int == 0 else
                                 f"Front: B | Back: A (A->B = {squares_forward_real:.3f} squares, "
                                 f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
                             )
                         else:
-                            # B earlier
-                            empties = float(((LA - RB - 1) % N)) if (LB is not None and LA is not None) else 0.0
-                            squares_forward_real = empties
-                            squares_forward_int = int(round(empties))
+                            squares_forward_real = float(diff_BA)
+                            squares_forward_int = int(diff_BA)
                             lead_text = (
-                                "Aligned (A==B)" if squares_forward_int == 0 else
                                 f"Front: A | Back: B (B->A = {squares_forward_real:.3f} squares, "
                                 f"{(squares_forward_real * self.led_period_us)/1e6:.6f} s)"
                             )
