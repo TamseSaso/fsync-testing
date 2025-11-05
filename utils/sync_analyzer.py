@@ -60,6 +60,7 @@ def deviceAnalyzer(
 
     if debug == True:
         suffix = f" [{device.getDeviceId()}]"
+        visualizer.addTopic("Input Stream" + suffix, node_out, "images")
         visualizer.addTopic("Sample" + suffix, sampler.out, "images")
         visualizer.addTopic("Warped Sample" + suffix, warp_node.out, "images")
         visualizer.addTopic("LED Grid" + suffix, led_visualizer.out, "images")
