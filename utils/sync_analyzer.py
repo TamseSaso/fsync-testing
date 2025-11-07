@@ -13,7 +13,7 @@ def deviceAnalyzer(
     node_out,
     shared_ticker,
     sample_interval_seconds: float = 10.0,
-    threshold_multiplier: float = 1.75,
+    threshold_multiplier: float = 1.6,
     visualizer = None,
     device = None,
     warp_size: tuple[int, int] = (1024, 1024),
