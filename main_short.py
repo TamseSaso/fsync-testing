@@ -13,7 +13,7 @@ DEVICE_INFOS = [dai.DeviceInfo(ip) for ip in ["10.12.211.220", "10.12.211.84"]] 
 assert len(DEVICE_INFOS) > 1, "At least two devices are required for this example."
 # If SAMPLE is None then it checks every frame for synchronization
 SAMPLE = 1.0
-DEBUG = True
+DEBUG = False
 
 # ---------------------------------------------------------------------------
 # Pipeline creation (unchanged API – only uses TARGET_FPS constant)
@@ -74,7 +74,7 @@ with contextlib.ExitStack() as stack:
         socket = device.getConnectedCameras()[0]
         pipeline, out_q, node_out = createPipeline(pipeline, socket)
 
-        samplers, warp_nodes, analyzers = deviceAnalyzer(node_out, shared_ticker, sample_interval_seconds = SAMPLE, threshold_multiplier = 1.47, visualizer = visualizer, device = device, debug = DEBUG)
+        samplers, warp_nodes, analyzers = deviceAnalyzer(node_out, shared_ticker, sample_interval_seconds = SAMPLE, threshold_multiplier = 1.40, visualizer = visualizer, device = device, debug = DEBUG)
 
         pipelines.append(pipeline)
         device_ids.append(deviceInfo.getXLinkDeviceDesc().name)
