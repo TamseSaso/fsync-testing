@@ -43,6 +43,23 @@ class SharedTicker:
                 self._cond.wait()
             return self._tick_idx
 
+    def epoch_monotonic(self) -> Optional[float]:
+        """Return the ticker start time (host monotonic seconds) or None if not started."""
+        with self._cond:
+            return self._start_time
+
+    def tick_index_for_time(self, mono_time: float) -> int:
+        """Compute which global tick index a given host-monotonic timestamp belongs to.
+        Returns 0 if before the ticker epoch."""
+        with self._cond:
+            if self._start_time is None:
+                return 0
+            if mono_time < self._start_time:
+                return 0
+            delta = mono_time - self._start_time
+            # Tick #1 fires exactly at _start_time
+            return int(delta // self.period_sec) + 1
+
 
 class FrameSamplingNode(dai.node.ThreadedHostNode):
     """Samples frames from input at specified intervals and forwards them to output.
@@ -68,6 +85,7 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         self._last_slot_idx = -1
         self.last_sample_time = 0.0
         self.latest_frame: Optional[dai.ImgFrame] = None
+        self.latest_arrival_mono: Optional[float] = None
         self.frame_lock = threading.Lock()
         self._bootstrapped = False
         self._target_start_slot: Optional[int] = None
@@ -110,6 +128,7 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                 if frame_msg is not None:
                     with self.frame_lock:
                         self.latest_frame = frame_msg
+                        self.latest_arrival_mono = time.monotonic()
 
                 # Forward every frame immediately in every-frame mode
                 if self._every_frame_mode and frame_msg is not None:
@@ -128,10 +147,19 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
             if self.shared_ticker is not None:
                 self._last_tick_idx = self.shared_ticker.wait_next_tick(self._last_tick_idx)
                 with self.frame_lock:
-                    if self.latest_frame is not None:
-                        self.out.send(self.latest_frame)
+                    frame = self.latest_frame
+                    arrival = self.latest_arrival_mono
+                if frame is not None and arrival is not None:
+                    slot = self.shared_ticker.tick_index_for_time(arrival)
+                    if slot == self._last_tick_idx:
+                        self.out.send(frame)
                         if self.debug:
-                            print(f"Frame sampled on global tick #{self._last_tick_idx} at {time.monotonic():.3f}s")
+                            print(f"Frame sampled on global tick #{self._last_tick_idx} (arrival tick match) at {time.monotonic():.3f}s")
+                    else:
+                        if self.debug:
+                            print(
+                                f"[SKIP] arrival tick {slot} != global tick {self._last_tick_idx} — dropping frame"
+                            )
                 continue
 
             # 2) PTP-slotted mode (device timestamps aligned by PTP)
