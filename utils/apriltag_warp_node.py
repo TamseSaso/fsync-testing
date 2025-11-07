@@ -1,6 +1,7 @@
 from typing import List, Tuple
 
 import time
+import re
 import cv2
 import numpy as np
 import depthai as dai
@@ -97,6 +98,9 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         extra_sharp_factor: float = 3.0,
         blur_upscale: float = 2.0,
         enable_lanczos_upscale: bool = True,
+        # --- new software fallbacks ---
+        enable_invert_fallback: bool = True,
+        alt_families: str | None = None,
     ) -> None:
         super().__init__()
 
@@ -148,6 +152,11 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         self.blur_upscale = float(blur_upscale)
         self._last_focus_measure: float = 0.0
         self._blur_mode: bool = False
+
+        # Software fallback controls
+        self.enable_invert_fallback = bool(enable_invert_fallback)
+        self.alt_families = alt_families
+        self._extra_engines: list = []  # detectors for alternative families
 
         self.tag_size = tag_size  # Tag size in meters
         self.z_offset = z_offset  # Z-axis offset in meters
@@ -234,6 +243,18 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         except Exception:
             g2 = gray
 
+        # Inverted variant to handle negative/white-on-black prints
+        if self.enable_invert_fallback:
+            try:
+                inv = cv2.bitwise_not(g2)
+                variants.append(("invert", inv))
+                if self.enable_adaptive_thresh:
+                    inv_at = cv2.adaptiveThreshold(
+                        inv, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 5
+                    )
+                    variants.append(("inv_athresh", inv_at))
+            except Exception:
+                pass
         # Bilateral smoothing preserves edges while denoising speckle
         if self.enable_bilateral_preproc:
             try:
@@ -327,6 +348,26 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
                 )
             except Exception:
                 self._detector_ultra = None
+
+        # Build extra engines for alternative families, once
+        if self.alt_families and not self._extra_engines:
+            try:
+                fams = [s for s in re.split(r"[|,\s]+", str(self.alt_families)) if s]
+            except Exception:
+                fams = []
+            for fam in fams:
+                try:
+                    det = AprilTagDetector(
+                        families=fam,
+                        nthreads=2,
+                        quad_decimate=1.0,
+                        quad_sigma=self.quad_sigma,
+                        refine_edges=int(self.refine_edges),
+                        decode_sharpening=self.decode_sharpening,
+                    )
+                    self._extra_engines.append(det)
+                except Exception:
+                    continue
 
     def _detect_with_engine(self, img: np.ndarray, engine) -> list["AprilTagWarpNode._SimpleDetection"]:
         try:
@@ -505,6 +546,8 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         if self._blur_mode and self._detector_xsharp is not None:
             engines.append(self._detector_xsharp)
         engines.extend([self._detector_sharp, self._detector_highres, self._detector])
+        # Try alternative-family detectors after primaries
+        engines.extend(getattr(self, "_extra_engines", []))
         engines = [e for e in engines if e is not None]
 
         # 1) Straight detects on each preproc variant
@@ -561,6 +604,13 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
                     strong_variants.append(img)
             if not strong_variants:
                 strong_variants = [v for _, v in variants]
+
+            # Also try alternative-family engines at native scale
+            for eng in getattr(self, "_extra_engines", [])[:3]:
+                for img in strong_variants[:2]:
+                    dets_alt = self._detect_with_engine(img, eng)
+                    if dets_alt:
+                        results.append(dets_alt)
 
             # Run ultra detector and then extra-sharp scaled if still blurry
             if self._detector_ultra is not None:
