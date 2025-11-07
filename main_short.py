@@ -36,8 +36,7 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
     output = None
     if SET_MANUAL_EXPOSURE:
         camRgb.initialControl.setManualExposure(6000, 100)
-        #camRgb.initialControl.setAutoWhiteBalanceMode(dai.CameraControl.AutoWhiteBalanceMode.DAYLIGHT)
-        #camRgb.initialControl.setManualWhiteBalance(1000)
+        camRgb.initialControl.setAutoWhiteBalanceMode(dai.CameraControl.AutoWhiteBalanceMode.DAYLIGHT)
         camRgb.initialControl.setSharpness(0)
     # Backwards-compatible return plus node output for visualizer usage
     return pipeline, output, node_out
