@@ -16,6 +16,11 @@ class SharedTicker:
         self._cond = threading.Condition()
         self._running = False
 
+        # Barrier/rendezvous support for cross-device tick alignment
+        self._participants = 0
+        self._rendezvous_acks = {}
+        self._barrier_timeout_sec = 0.02
+
     def start(self):
         with self._cond:
             if self._running:
@@ -49,16 +54,47 @@ class SharedTicker:
             return self._start_time
 
     def tick_index_for_time(self, mono_time: float) -> int:
-        """Compute which global tick index a given host-monotonic timestamp belongs to.
-        Returns 0 if before the ticker epoch."""
+        """Map a host-monotonic timestamp to a tick index.
+        Returns 0 if before the ticker epoch or the ticker hasn't started."""
         with self._cond:
-            if self._start_time is None:
-                return 0
-            if mono_time < self._start_time:
+            if self._start_time is None or mono_time < self._start_time:
                 return 0
             delta = mono_time - self._start_time
-            # Tick #1 fires exactly at _start_time
-            return int(delta // self.period_sec) + 1
+            return int(delta // self.period_sec) + 1  # tick #1 at epoch
+
+    def register_participant(self) -> None:
+        """Register one sampler as a participant in rendezvous barriers."""
+        with self._cond:
+            self._participants += 1
+
+    def set_barrier_timeout(self, seconds: float) -> None:
+        with self._cond:
+            self._barrier_timeout_sec = float(seconds)
+
+    def rendezvous(self, tick_idx: int, timeout: Optional[float] = None) -> bool:
+        """Barrier: wait until all registered participants acknowledge this tick.
+        Returns True if all arrived before timeout, False otherwise.
+        """
+        with self._cond:
+            # increment acks for this tick
+            cur = self._rendezvous_acks.get(tick_idx, 0) + 1
+            self._rendezvous_acks[tick_idx] = cur
+            self._cond.notify_all()
+            if self._participants <= 1:
+                return True
+            deadline = time.monotonic() + (self._barrier_timeout_sec if timeout is None else float(timeout))
+            while self._rendezvous_acks.get(tick_idx, 0) < self._participants:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._cond.wait(timeout=remaining)
+            ok = self._rendezvous_acks.get(tick_idx, 0) >= self._participants
+            # cleanup old ticks to prevent growth
+            for old in list(self._rendezvous_acks.keys()):
+                if old < tick_idx - 2:
+                    del self._rendezvous_acks[old]
+            self._cond.notify_all()
+            return ok
 
 
 class FrameSamplingNode(dai.node.ThreadedHostNode):
@@ -68,7 +104,7 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
     Output: dai.ImgFrame (sampled at specified interval)
     """
 
-    def __init__(self, sample_interval_seconds: Optional[float] = 5.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = None, ptp_slot_phase: float = 0.0, debug: bool = False, tick_grace_sec: float = 0.010, arrival_latency_correction_sec: float = 0.0) -> None:
+    def __init__(self, sample_interval_seconds: Optional[float] = 5.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = None, ptp_slot_phase: float = 0.0, debug: bool = False, tick_grace_sec: float = 0.006, arrival_latency_correction_sec: float = 0.0, barrier: bool = True, barrier_timeout_sec: float = 0.02) -> None:
         super().__init__()
         
         self.input = self.createInput()
@@ -91,12 +127,17 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         self._target_start_slot: Optional[int] = None
         self._every_frame_mode = (self.shared_ticker is None and self.ptp_slot_period is None and self.sample_interval is None)
         self.debug = bool(debug)
-        # Tick alignment tuning
+
+        # Tick alignment tuning & barrier
         self.tick_grace_sec = float(tick_grace_sec) if tick_grace_sec is not None else 0.0
         self.arrival_latency_correction_sec = float(arrival_latency_correction_sec or 0.0)
+        self.barrier_enabled = bool(barrier)
+        self.barrier_timeout_sec = float(barrier_timeout_sec)
 
     def build(self, frames: dai.Node.Output) -> "FrameSamplingNode":
         frames.link(self.input)
+        if self.shared_ticker is not None and self.barrier_enabled:
+            self.shared_ticker.register_participant()
         return self
 
     def wait_first_frame(self, timeout: float = 2.0) -> bool:
@@ -148,10 +189,12 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         while self.isRunning():
             # 1) Shared global ticker mode
             if self.shared_ticker is not None:
+                # Wait for the next global tick number (shared across devices)
                 self._last_tick_idx = self.shared_ticker.wait_next_tick(self._last_tick_idx)
-                # Grace window: wait a few ms after the tick to let frames land
+                # Grace window lets frames land for this tick
                 if self.tick_grace_sec > 0.0:
                     time.sleep(min(self.tick_grace_sec, max(0.0, self.shared_ticker.period_sec * 0.25)))
+                # Capture latest frame + arrival time atomically
                 with self.frame_lock:
                     frame = self.latest_frame
                     arrival = self.latest_arrival_mono
@@ -159,10 +202,14 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                     corrected = arrival - self.arrival_latency_correction_sec
                     slot = self.shared_ticker.tick_index_for_time(corrected)
                     if slot == self._last_tick_idx:
+                        # Optional cross-device barrier so all samplers emit on the same tick index
+                        barrier_ok = True
+                        if self.barrier_enabled:
+                            barrier_ok = self.shared_ticker.rendezvous(self._last_tick_idx, timeout=self.barrier_timeout_sec)
                         self.out.send(frame)
                         if self.debug:
                             print(
-                                f"Frame sampled on global tick #{self._last_tick_idx} (arrival match) at {time.monotonic():.3f}s; corrected_arrival={corrected:.6f} grace={self.tick_grace_sec:.3f}s"
+                                f"Frame sampled on global tick #{self._last_tick_idx} (arrival match, barrier={'ok' if barrier_ok else 'timeout'}) at {time.monotonic():.3f}s; corrected_arrival={corrected:.6f} grace={self.tick_grace_sec:.3f}s"
                             )
                     else:
                         if self.debug:
