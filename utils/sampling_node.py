@@ -133,7 +133,7 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
     Output: dai.ImgFrame (sampled at specified interval)
     """
 
-    def __init__(self, sample_interval_seconds: Optional[float] = 5.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = None, ptp_slot_phase: float = 0.0, debug: bool = False, tick_grace_sec: float = 0.001, arrival_latency_correction_sec: float = 0.0, barrier: bool = True, barrier_timeout_sec: float = 0.02, wait_window_sec: float = 0.040, auto_calibrate_correction: bool = True, dt_threshold_sec: float = 0.02) -> None:
+    def __init__(self, sample_interval_seconds: Optional[float] = 5.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = None, ptp_slot_phase: float = 0.0, debug: bool = False, tick_grace_sec: float = 0.001, arrival_latency_correction_sec: float = 0.0, barrier: bool = True, barrier_timeout_sec: float = 0.02, wait_window_sec: float = 0.040, auto_calibrate_correction: bool = True, dt_threshold_sec: float = 0.02, latency_threshold_sec: float = 0.010) -> None:
         super().__init__()
         
         self.input = self.createInput()
@@ -172,6 +172,9 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         self._dyn_corr_min = -0.050  # allow up to +50 ms push later (negative means add)
         self._dyn_corr_max = 0.050   # and -50 ms pull earlier
         self.dt_threshold_sec = float(dt_threshold_sec)
+
+        # Per-node latency limit relative to tick start; drop if exceeded
+        self.latency_threshold_sec = float(latency_threshold_sec)
 
     def build(self, frames: dai.Node.Output) -> "FrameSamplingNode":
         frames.link(self.input)
@@ -257,6 +260,16 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                     corrected = arrival - self._dyn_arrival_corr
                     slot = self.shared_ticker.tick_index_for_time(corrected)
                     if slot == self._last_tick_idx:
+                        # Enforce per-node latency to tick start before any barrier logic
+                        delta = corrected - tick_start  # seconds from tick start
+                        if delta > self.latency_threshold_sec:
+                            if self.debug:
+                                print(
+                                    f"[DROP] tick {self._last_tick_idx}: latency {delta*1000:.1f}ms > {self.latency_threshold_sec*1000:.1f}ms"
+                                )
+                            time.sleep(0.0005)
+                            continue
+
                         barrier_ok, spread = True, 0.0
                         if self.barrier_enabled:
                             barrier_ok, spread = self.shared_ticker.rendezvous(
@@ -275,7 +288,7 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                             continue
 
                         # Proportional fine-tune towards tick start (minimize delta within tick)
-                        delta = corrected - tick_start  # seconds from tick start
+                        # `delta` already computed above
                         kp = 0.2
                         adj = -kp * delta
                         adj = max(-0.004, min(0.004, adj))  # clamp to ±4ms per update
@@ -308,35 +321,43 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                         corrected = arrival - self._dyn_arrival_corr
                         slot = self.shared_ticker.tick_index_for_time(corrected)
                         if slot == self._last_tick_idx:
-                            barrier_ok, spread = True, 0.0
-                            if self.barrier_enabled:
-                                barrier_ok, spread = self.shared_ticker.rendezvous(
-                                    self._last_tick_idx,
-                                    corrected_arrival=corrected,
-                                    dt_threshold=self.dt_threshold_sec,
-                                    timeout=self.barrier_timeout_sec,
-                                )
-                            # If barrier fails or exceeds dt threshold, drop this frame (end of window)
-                            if self.barrier_enabled and not barrier_ok:
+                            # Enforce per-node latency limit at window end
+                            delta = corrected - tick_start
+                            if delta > self.latency_threshold_sec:
                                 if self.debug:
                                     print(
-                                        f"[DROP] tick {self._last_tick_idx}: barrier failed/timeout at window end (spread={spread*1000:.1f}ms, thr={self.dt_threshold_sec*1000:.1f}ms)"
+                                        f"[DROP] tick {self._last_tick_idx}: latency {delta*1000:.1f}ms > {self.latency_threshold_sec*1000:.1f}ms at window end"
                                     )
                                 # do not send; leave `sent` as False so the SKIP log below will trigger
                             else:
-                                # Proportional fine-tune towards tick start
-                                delta = corrected - tick_start
-                                kp = 0.2
-                                adj = -kp * delta
-                                adj = max(-0.004, min(0.004, adj))
-                                self._dyn_arrival_corr = max(self._dyn_corr_min, min(self._dyn_corr_max, self._dyn_arrival_corr + adj))
-
-                                self.out.send(frame)
-                                sent = True
-                                if self.debug:
-                                    print(
-                                        f"Frame sampled on global tick #{self._last_tick_idx} (post-window, barrier={'ok' if barrier_ok else 'timeout'}) at {time.monotonic():.3f}s; corrected_arrival={corrected:.6f} Δtick={delta*1000:.1f}ms spread={spread*1000:.1f}ms window={self.wait_window_sec:.3f}s corr={self._dyn_arrival_corr:.3f}s"
+                                barrier_ok, spread = True, 0.0
+                                if self.barrier_enabled:
+                                    barrier_ok, spread = self.shared_ticker.rendezvous(
+                                        self._last_tick_idx,
+                                        corrected_arrival=corrected,
+                                        dt_threshold=self.dt_threshold_sec,
+                                        timeout=self.barrier_timeout_sec,
                                     )
+                                # If barrier fails or exceeds dt threshold, drop this frame (end of window)
+                                if self.barrier_enabled and not barrier_ok:
+                                    if self.debug:
+                                        print(
+                                            f"[DROP] tick {self._last_tick_idx}: barrier failed/timeout at window end (spread={spread*1000:.1f}ms, thr={self.dt_threshold_sec*1000:.1f}ms)"
+                                        )
+                                    # do not send; leave `sent` as False so the SKIP log below will trigger
+                                else:
+                                    # Proportional fine-tune towards tick start (delta already computed above)
+                                    kp = 0.2
+                                    adj = -kp * delta
+                                    adj = max(-0.004, min(0.004, adj))
+                                    self._dyn_arrival_corr = max(self._dyn_corr_min, min(self._dyn_corr_max, self._dyn_arrival_corr + adj))
+
+                                    self.out.send(frame)
+                                    sent = True
+                                    if self.debug:
+                                        print(
+                                            f"Frame sampled on global tick #{self._last_tick_idx} (post-window, barrier={'ok' if barrier_ok else 'timeout'}) at {time.monotonic():.3f}s; corrected_arrival={corrected:.6f} Δtick={delta*1000:.1f}ms spread={spread*1000:.1f}ms window={self.wait_window_sec:.3f}s corr={self._dyn_arrival_corr:.3f}s"
+                                        )
 
                 if not sent and self.debug:
                     print(
