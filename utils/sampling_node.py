@@ -104,7 +104,7 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
     Output: dai.ImgFrame (sampled at specified interval)
     """
 
-    def __init__(self, sample_interval_seconds: Optional[float] = 5.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = None, ptp_slot_phase: float = 0.0, debug: bool = False, tick_grace_sec: float = 0.006, arrival_latency_correction_sec: float = 0.0, barrier: bool = True, barrier_timeout_sec: float = 0.02) -> None:
+    def __init__(self, sample_interval_seconds: Optional[float] = 5.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = None, ptp_slot_phase: float = 0.0, debug: bool = False, tick_grace_sec: float = 0.006, arrival_latency_correction_sec: float = 0.0, barrier: bool = True, barrier_timeout_sec: float = 0.02, wait_window_sec: float = 0.025, auto_calibrate_correction: bool = True) -> None:
         super().__init__()
         
         self.input = self.createInput()
@@ -133,6 +133,15 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         self.arrival_latency_correction_sec = float(arrival_latency_correction_sec or 0.0)
         self.barrier_enabled = bool(barrier)
         self.barrier_timeout_sec = float(barrier_timeout_sec)
+
+        # Wait-and-grab window & auto-correction of arrival offset
+        self.wait_window_sec = float(wait_window_sec)
+        self.auto_calibrate_correction = bool(auto_calibrate_correction)
+        # dynamic correction we can adjust at runtime
+        self._dyn_arrival_corr = float(self.arrival_latency_correction_sec)
+        self._dyn_corr_step = 0.002  # 2 ms per adjustment
+        self._dyn_corr_min = -0.050  # allow up to +50 ms push later (negative means add)
+        self._dyn_corr_max = 0.050   # and -50 ms pull earlier
 
     def build(self, frames: dai.Node.Output) -> "FrameSamplingNode":
         frames.link(self.input)
@@ -185,37 +194,83 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                 print(f"FrameSamplingNode input error: {e}")
                 continue
 
+    def _tick_start_time(self, tick_idx: int) -> Optional[float]:
+        if self.shared_ticker is None:
+            return None
+        epoch = self.shared_ticker.epoch_monotonic()
+        if epoch is None or tick_idx <= 0:
+            return None
+        return epoch + (tick_idx - 1) * self.shared_ticker.period_sec
+
     def _sampling_loop(self) -> None:
         while self.isRunning():
             # 1) Shared global ticker mode
             if self.shared_ticker is not None:
                 # Wait for the next global tick number (shared across devices)
                 self._last_tick_idx = self.shared_ticker.wait_next_tick(self._last_tick_idx)
+                tick_start = self._tick_start_time(self._last_tick_idx) or time.monotonic()
+
                 # Grace window lets frames land for this tick
                 if self.tick_grace_sec > 0.0:
                     time.sleep(min(self.tick_grace_sec, max(0.0, self.shared_ticker.period_sec * 0.25)))
-                # Capture latest frame + arrival time atomically
-                with self.frame_lock:
-                    frame = self.latest_frame
-                    arrival = self.latest_arrival_mono
-                if frame is not None and arrival is not None:
-                    corrected = arrival - self.arrival_latency_correction_sec
+
+                deadline = tick_start + self.wait_window_sec
+                sent = False
+                while time.monotonic() < deadline:
+                    with self.frame_lock:
+                        frame = self.latest_frame
+                        arrival = self.latest_arrival_mono
+                    if frame is None or arrival is None:
+                        time.sleep(0.0005)
+                        continue
+
+                    corrected = arrival - self._dyn_arrival_corr
                     slot = self.shared_ticker.tick_index_for_time(corrected)
                     if slot == self._last_tick_idx:
-                        # Optional cross-device barrier so all samplers emit on the same tick index
                         barrier_ok = True
                         if self.barrier_enabled:
                             barrier_ok = self.shared_ticker.rendezvous(self._last_tick_idx, timeout=self.barrier_timeout_sec)
                         self.out.send(frame)
+                        sent = True
                         if self.debug:
                             print(
-                                f"Frame sampled on global tick #{self._last_tick_idx} (arrival match, barrier={'ok' if barrier_ok else 'timeout'}) at {time.monotonic():.3f}s; corrected_arrival={corrected:.6f} grace={self.tick_grace_sec:.3f}s"
+                                f"Frame sampled on global tick #{self._last_tick_idx} (arrival match, barrier={'ok' if barrier_ok else 'timeout'}) at {time.monotonic():.3f}s; corrected_arrival={corrected:.6f} grace={self.tick_grace_sec:.3f}s corr={self._dyn_arrival_corr:.3f}s"
                             )
-                    else:
-                        if self.debug:
-                            print(
-                                f"[SKIP] corrected arrival tick {slot} != global tick {self._last_tick_idx} — dropping frame (arrival={arrival:.6f}, corrected={corrected:.6f}, grace={self.tick_grace_sec:.3f}s, corr={self.arrival_latency_correction_sec:.3f}s)"
-                            )
+                        break
+
+                    # Auto-calibrate arrival correction towards the current tick
+                    if self.auto_calibrate_correction:
+                        if slot < self._last_tick_idx:
+                            # frame mapped to previous tick -> push later (make correction more negative)
+                            self._dyn_arrival_corr = max(self._dyn_corr_min, self._dyn_arrival_corr - self._dyn_corr_step)
+                        elif slot > self._last_tick_idx:
+                            # frame mapped to future tick -> pull earlier (increase correction)
+                            self._dyn_arrival_corr = min(self._dyn_corr_max, self._dyn_arrival_corr + self._dyn_corr_step)
+                    time.sleep(0.0005)
+
+                if not sent:
+                    # Final check once after window in case it landed exactly at the boundary
+                    with self.frame_lock:
+                        frame = self.latest_frame
+                        arrival = self.latest_arrival_mono
+                    if frame is not None and arrival is not None:
+                        corrected = arrival - self._dyn_arrival_corr
+                        slot = self.shared_ticker.tick_index_for_time(corrected)
+                        if slot == self._last_tick_idx:
+                            barrier_ok = True
+                            if self.barrier_enabled:
+                                barrier_ok = self.shared_ticker.rendezvous(self._last_tick_idx, timeout=self.barrier_timeout_sec)
+                            self.out.send(frame)
+                            sent = True
+                            if self.debug:
+                                print(
+                                    f"Frame sampled on global tick #{self._last_tick_idx} (arrival match post-window, barrier={'ok' if barrier_ok else 'timeout'}) at {time.monotonic():.3f}s; corrected_arrival={corrected:.6f} window={self.wait_window_sec:.3f}s corr={self._dyn_arrival_corr:.3f}s"
+                                )
+
+                if not sent and self.debug:
+                    print(
+                        f"[SKIP] no matching frame for tick {self._last_tick_idx} (corr={self._dyn_arrival_corr:.3f}s, window={self.wait_window_sec:.3f}s, grace={self.tick_grace_sec:.3f}s)"
+                    )
                 continue
 
             # 2) PTP-slotted mode (device timestamps aligned by PTP)
