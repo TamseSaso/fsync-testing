@@ -85,6 +85,13 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         decision_margin: float = 5.0,
         persistence_seconds: float = 2.0,
         hold_last_warp_seconds: float = 1.0,
+        # --- new robustness knobs ---
+        emergency_low_dm_factor: float = 0.6,
+        panic_after_frames: int = 8,
+        max_upscale: float = 2.0,
+        enable_bilateral_preproc: bool = True,
+        enable_tophat_preproc: bool = True,
+        enable_adaptive_thresh: bool = True,
     ) -> None:
         super().__init__()
 
@@ -120,7 +127,12 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         self.enable_clahe = True
         self.enable_unsharp = True
         self.enable_multiscale = True
-        self.variant_scales = (1.0, 1.5)
+        # broaden variant scales for extreme cases; values > 1.0 imply upscaling
+        self.variant_scales = (1.25, 1.5, 1.75, 2.0)
+        self.max_upscale = float(max_upscale)
+        self.enable_bilateral_preproc = bool(enable_bilateral_preproc)
+        self.enable_tophat_preproc = bool(enable_tophat_preproc)
+        self.enable_adaptive_thresh = bool(enable_adaptive_thresh)
         self._detector_sharp = None  # persistent sharper-decoder detector
 
         self.tag_size = tag_size  # Tag size in meters
@@ -133,7 +145,8 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         self.bottom_y_offset = 0.01
 
         self._detector = None
-        self._detector_highres = None  # persistent fallback detector
+        self._detector_highres = None  # persistent fallback detector (decimate=1.0)
+        self._detector_ultra = None    # persistent panic-mode detector (decimate=0.5)
 
         # Persistence structures
         # tag_id -> {"corners": np.ndarray(4,2), "center": (x,y), "timestamp": float}
@@ -143,6 +156,11 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         self._last_warp_frame: np.ndarray | None = None
         self._last_warp_time: float = 0.0
 
+        # Track consecutive no-detection frames to trigger panic mode
+        self._no_detect_streak: int = 0
+        self.emergency_low_dm_factor = float(emergency_low_dm_factor)
+        self.panic_after_frames = int(panic_after_frames)
+
         # Camera intrinsics (approximate) for pose nudging
         self.camera_matrix = np.array([
             [1400.0, 0.0, 960.0],
@@ -150,6 +168,117 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
             [0.0, 0.0, 1.0],
         ], dtype=np.float32)
         self.dist_coeffs = np.zeros((4, 1), dtype=np.float32)
+    def _preprocess_variants(self, gray: np.ndarray) -> list[tuple[str, np.ndarray]]:
+        """Generate a set of robust grayscale variants.
+        We keep everything 8-bit and conservative to avoid artifacts.
+        Returns list of (name, image) pairs.
+        """
+        variants: list[tuple[str, np.ndarray]] = [("raw", gray)]
+
+        # CLAHE + gamma + unsharp (existing pipeline)
+        try:
+            g2 = self._apply_clahe_and_gamma(gray)
+            variants.append(("clahe", g2))
+        except Exception:
+            g2 = gray
+
+        # Bilateral smoothing preserves edges while denoising speckle
+        if self.enable_bilateral_preproc:
+            try:
+                gb = cv2.bilateralFilter(g2, 7, 40, 40)
+                variants.append(("bilateral", gb))
+            except Exception:
+                pass
+
+        # Top-hat / black-hat to fight non-uniform illumination and glare
+        if self.enable_tophat_preproc:
+            try:
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+                top = cv2.morphologyEx(g2, cv2.MORPH_TOPHAT, kernel)
+                black = cv2.morphologyEx(g2, cv2.MORPH_BLACKHAT, kernel)
+                # Boost bright small-scale structures (like tag edges) and suppress halos
+                boosted = cv2.addWeighted(g2, 1.0, top, 0.8, 0)
+                black_scaled = cv2.convertScaleAbs(black, alpha=0.5, beta=0)
+                boosted = cv2.subtract(boosted, black_scaled)
+                variants.append(("tophat", boosted))
+            except Exception:
+                pass
+
+        # Binary adaptive threshold variant can help on washed-out scenes
+        if self.enable_adaptive_thresh:
+            try:
+                at = cv2.adaptiveThreshold(
+                    g2, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 5
+                )
+                variants.append(("athresh", at))
+            except Exception:
+                pass
+
+        return variants
+
+    def _ensure_detectors(self) -> None:
+        """Lazily (and idempotently) construct detector variants."""
+        self._lazy_init()
+
+        # Sharper decoder variant (more aggressive decode sharpening)
+        if self._detector_sharp is None:
+            try:
+                self._detector_sharp = AprilTagDetector(
+                    families=self.families,
+                    nthreads=2,
+                    quad_decimate=1.0,
+                    quad_sigma=0.0,
+                    refine_edges=int(self.refine_edges),
+                    decode_sharpening=max(0.5, float(self.decode_sharpening) * 2.0),
+                )
+            except Exception:
+                self._detector_sharp = None
+
+        # High-res fallback (quad_decimate = 1.0)
+        if self._detector_highres is None:
+            try:
+                self._detector_highres = AprilTagDetector(
+                    families=self.families,
+                    nthreads=2,
+                    quad_decimate=1.0,
+                    quad_sigma=self.quad_sigma,
+                    refine_edges=int(self.refine_edges),
+                    decode_sharpening=self.decode_sharpening,
+                )
+            except Exception:
+                self._detector_highres = None
+
+        # Ultra mode (panic): even higher res (decimate=0.5)
+        if self._detector_ultra is None:
+            try:
+                self._detector_ultra = AprilTagDetector(
+                    families=self.families,
+                    nthreads=2,
+                    quad_decimate=0.5,
+                    quad_sigma=self.quad_sigma,
+                    refine_edges=int(self.refine_edges),
+                    decode_sharpening=max(0.75, float(self.decode_sharpening) * 2.0),
+                )
+            except Exception:
+                self._detector_ultra = None
+
+    def _detect_with_engine(self, img: np.ndarray, engine) -> list["AprilTagWarpNode._SimpleDetection"]:
+        try:
+            dets = engine.detect(img)
+        except Exception:
+            dets = None
+        return self._wrap_detections(dets, 1.0, 1.0)
+
+    def _detect_scaled(self, img: np.ndarray, scale: float, engine) -> list["AprilTagWarpNode._SimpleDetection"]:
+        try:
+            g_up = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        except Exception:
+            return []
+        try:
+            dets = engine.detect(g_up)
+        except Exception:
+            dets = None
+        return self._wrap_detections(dets, scale, scale)
 
     def build(self, frames: dai.Node.Output) -> "AprilTagWarpNode":
         frames.link(self.input)
@@ -262,11 +391,13 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
                 continue
         return out
 
-    def _dedupe_best(self, lists: List[List["AprilTagWarpNode._SimpleDetection"]]) -> List["AprilTagWarpNode._SimpleDetection"]:
+    def _dedupe_best(self, lists: List[List["AprilTagWarpNode._SimpleDetection"]], min_dm: float | None = None) -> List["AprilTagWarpNode._SimpleDetection"]:
+        if min_dm is None:
+            min_dm = self.decision_margin
         best: dict[int, "AprilTagWarpNode._SimpleDetection"] = {}
         for L in lists:
             for d in L:
-                if d.decision_margin < self.decision_margin:
+                if d.decision_margin < float(min_dm):
                     continue
                 cur = best.get(d.tag_id)
                 if cur is None or d.decision_margin > cur.decision_margin:
@@ -274,95 +405,88 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         return list(best.values())
 
     def _detect_apriltags(self, gray: np.ndarray) -> List["AprilTagWarpNode._SimpleDetection"]:
-        """Robust multi-variant detection: raw -> CLAHE/gamma -> sharper -> upscaled."""
-        self._lazy_init()
+        """Bulletproof multi-variant detection.
 
+        Strategy:
+        - Try several carefully chosen pre-processing variants (CLAHE, bilateral, tophat, adaptive threshold).
+        - For each variant, run base/sharp/high-res engines.
+        - Multi-scale upscaling passes for tiny/far tags.
+        - If we fail for several consecutive frames, enter a panic mode that relaxes
+          the decision margin and uses an ultra-high-resolution detector.
+        """
+        self._ensure_detectors()
+
+        min_dm = float(self.decision_margin)
         results: List[List["AprilTagWarpNode._SimpleDetection"]] = []
+        variants = self._preprocess_variants(gray)
 
-        # Stage 1: base detector on raw gray
-        try:
-            base = self._wrap_detections(self._detector.detect(gray), 1.0, 1.0)
-        except Exception:
-            base = []
-        if base:
-            results.append(base)
-            if len(base) >= 4:
-                return self._dedupe_best(results)
+        # Engines in descending order of speed; we will early-exit on success
+        engines = [self._detector, self._detector_sharp, self._detector_highres]
+        engines = [e for e in engines if e is not None]
 
-        # Stage 2: preprocessed (CLAHE + gamma + unsharp)
-        g2 = self._apply_clahe_and_gamma(gray)
-        try:
-            base_pre = self._wrap_detections(self._detector.detect(g2), 1.0, 1.0)
-        except Exception:
-            base_pre = []
-        if base_pre:
-            results.append(base_pre)
-            if len(self._dedupe_best(results)) >= 4:
-                return self._dedupe_best(results)
+        # 1) Straight detects on each preproc variant
+        for _, img in variants:
+            for eng in engines:
+                dets = self._detect_with_engine(img, eng)
+                if dets:
+                    results.append(dets)
+                    dedup = self._dedupe_best(results, min_dm)
+                    if len(dedup) >= 4:
+                        self._no_detect_streak = 0
+                        return dedup
 
-        # Stage 3: sharper decoder on preprocessed
-        if self._detector_sharp is None:
-            try:
-                self._detector_sharp = AprilTagDetector(
-                    families=self.families,
-                    nthreads=2,
-                    quad_decimate=1.0,
-                    quad_sigma=0.0,
-                    refine_edges=int(self.refine_edges),
-                    decode_sharpening=max(0.5, float(self.decode_sharpening) * 2.0),
-                )
-            except Exception:
-                self._detector_sharp = None
-        sharp_pre = []
-        if self._detector_sharp is not None:
-            try:
-                sharp_pre = self._wrap_detections(self._detector_sharp.detect(g2), 1.0, 1.0)
-            except Exception:
-                sharp_pre = []
-        if sharp_pre:
-            results.append(sharp_pre)
-            if len(self._dedupe_best(results)) >= 4:
-                return self._dedupe_best(results)
-
-        # Stage 4: high-res fallback (quad_decimate = 1.0) on raw
-        if self._detector_highres is None:
-            try:
-                self._detector_highres = AprilTagDetector(
-                    families=self.families,
-                    nthreads=2,
-                    quad_decimate=1.0,
-                    quad_sigma=self.quad_sigma,
-                    refine_edges=int(self.refine_edges),
-                    decode_sharpening=self.decode_sharpening,
-                )
-            except Exception:
-                self._detector_highres = None
-        high_raw = []
-        if self._detector_highres is not None:
-            try:
-                high_raw = self._wrap_detections(self._detector_highres.detect(gray), 1.0, 1.0)
-            except Exception:
-                high_raw = []
-        if high_raw:
-            results.append(high_raw)
-            if len(self._dedupe_best(results)) >= 4:
-                return self._dedupe_best(results)
-
-        # Stage 5: upscaled (to recover tiny/far tags)
+        # 2) Multi-scale upscaling passes (helps tiny/far tags)
         if self.enable_multiscale:
-            scale = 1.5
-            try:
-                g_up = cv2.resize(g2, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-                up = []
-                # Prefer sharper detector if available
-                det_eng = self._detector_sharp or self._detector_highres or self._detector
-                up = self._wrap_detections(det_eng.detect(g_up), scale, scale) if det_eng is not None else []
-            except Exception:
-                up = []
-            if up:
-                results.append(up)
+            pref_engine = self._detector_sharp or self._detector_highres or self._detector
+            if pref_engine is not None:
+                for _, img in variants:
+                    for s in self.variant_scales:
+                        if s <= 1.01:
+                            continue
+                        if s > self.max_upscale:
+                            continue
+                        dets = self._detect_scaled(img, float(s), pref_engine)
+                        if dets:
+                            results.append(dets)
+                            dedup = self._dedupe_best(results, min_dm)
+                            if len(dedup) >= 4:
+                                self._no_detect_streak = 0
+                                return dedup
 
-        return self._dedupe_best(results)
+        # If we got here we didn't get 4 solid tags this frame
+        self._no_detect_streak += 1
+
+        # 3) Panic mode: relax margin + ultra detector on strongest variants
+        if self._no_detect_streak >= self.panic_after_frames:
+            emergency_dm = max(2.0, float(self.decision_margin) * float(self.emergency_low_dm_factor))
+            strong_variants = []
+            # Prefer CLAHE / bilateral / tophat if present
+            for name, img in variants:
+                if name in ("clahe", "bilateral", "tophat"):
+                    strong_variants.append(img)
+            if not strong_variants:
+                strong_variants = [v for _, v in variants]
+
+            # Run ultra detector at native and max upscale
+            if self._detector_ultra is not None:
+                for img in strong_variants[:2]:  # cap work
+                    dets = self._detect_with_engine(img, self._detector_ultra)
+                    if dets:
+                        results.append(dets)
+                    if self.enable_multiscale and self.max_upscale > 1.01:
+                        s = float(min(self.max_upscale, 2.0))
+                        dets2 = self._detect_scaled(img, s, self._detector_ultra)
+                        if dets2:
+                            results.append(dets2)
+
+            dedup = self._dedupe_best(results, emergency_dm)
+            if len(dedup) >= 4:
+                # keep streak but reset after success so we don't stay in panic forever
+                self._no_detect_streak = 0
+                return dedup
+
+        # Return best we managed to find (possibly < 4); caller handles persistence/hold
+        return self._dedupe_best(results, min_dm)
 
     def _send_img(self, bgr: np.ndarray, src: dai.ImgFrame) -> None:
         img = dai.ImgFrame()
