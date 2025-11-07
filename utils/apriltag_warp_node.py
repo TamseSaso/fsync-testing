@@ -92,6 +92,11 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         enable_bilateral_preproc: bool = True,
         enable_tophat_preproc: bool = True,
         enable_adaptive_thresh: bool = True,
+        # --- new blur-handling knobs ---
+        blur_lap_var_thresh: float = 80.0,
+        extra_sharp_factor: float = 3.0,
+        blur_upscale: float = 2.0,
+        enable_lanczos_upscale: bool = True,
     ) -> None:
         super().__init__()
 
@@ -133,7 +138,16 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         self.enable_bilateral_preproc = bool(enable_bilateral_preproc)
         self.enable_tophat_preproc = bool(enable_tophat_preproc)
         self.enable_adaptive_thresh = bool(enable_adaptive_thresh)
+        self.enable_lanczos_upscale = bool(enable_lanczos_upscale)
         self._detector_sharp = None  # persistent sharper-decoder detector
+        self._detector_xsharp = None  # extra-sharp decoder for blur
+
+        # Blur-handling parameters/state
+        self.blur_lap_var_thresh = float(blur_lap_var_thresh)
+        self.extra_sharp_factor = float(extra_sharp_factor)
+        self.blur_upscale = float(blur_upscale)
+        self._last_focus_measure: float = 0.0
+        self._blur_mode: bool = False
 
         self.tag_size = tag_size  # Tag size in meters
         self.z_offset = z_offset  # Z-axis offset in meters
@@ -168,6 +182,44 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
             [0.0, 0.0, 1.0],
         ], dtype=np.float32)
         self.dist_coeffs = np.zeros((4, 1), dtype=np.float32)
+    def _is_blurry(self, gray: np.ndarray) -> bool:
+        """Return True if the frame appears blurry (low Laplacian variance)."""
+        try:
+            fm = cv2.Laplacian(gray, cv2.CV_64F).var()
+        except Exception:
+            self._last_focus_measure = 0.0
+            return False
+        self._last_focus_measure = float(fm)
+        return fm < float(self.blur_lap_var_thresh)
+
+    def _preprocess_blur_variants(self, base: np.ndarray) -> list[tuple[str, np.ndarray]]:
+        """Generate extra variants that specifically counter motion/defocus blur."""
+        out: list[tuple[str, np.ndarray]] = []
+        g = base
+        # Strong unsharp mask
+        try:
+            blur = cv2.GaussianBlur(g, (0, 0), 1.8)
+            strong = cv2.addWeighted(g, 1.9, blur, -0.9, 0)
+            out.append(("unsharp_strong", strong))
+        except Exception:
+            pass
+        # Laplacian-based sharpening (edge boost)
+        try:
+            lap = cv2.Laplacian(g, cv2.CV_16S, ksize=3)
+            lap = cv2.convertScaleAbs(lap)
+            lap_sharp = cv2.subtract(g, lap)
+            out.append(("lapsharp", lap_sharp))
+        except Exception:
+            pass
+        # Morphological gradient to emphasize edges
+        try:
+            k = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            grad = cv2.morphologyEx(g, cv2.MORPH_GRADIENT, k)
+            boost = cv2.addWeighted(g, 1.0, grad, 1.0, 0)
+            out.append(("morphgrad", boost))
+        except Exception:
+            pass
+        return out
     def _preprocess_variants(self, gray: np.ndarray) -> list[tuple[str, np.ndarray]]:
         """Generate a set of robust grayscale variants.
         We keep everything 8-bit and conservative to avoid artifacts.
@@ -234,6 +286,20 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
             except Exception:
                 self._detector_sharp = None
 
+        # Extra-sharp decoder (even stronger sharpening & forced refine)
+        if self._detector_xsharp is None:
+            try:
+                self._detector_xsharp = AprilTagDetector(
+                    families=self.families,
+                    nthreads=2,
+                    quad_decimate=1.0,
+                    quad_sigma=0.0,
+                    refine_edges=1,
+                    decode_sharpening=max(0.8, float(self.decode_sharpening) * float(self.extra_sharp_factor)),
+                )
+            except Exception:
+                self._detector_xsharp = None
+
         # High-res fallback (quad_decimate = 1.0)
         if self._detector_highres is None:
             try:
@@ -271,7 +337,8 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
 
     def _detect_scaled(self, img: np.ndarray, scale: float, engine) -> list["AprilTagWarpNode._SimpleDetection"]:
         try:
-            g_up = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            interp = cv2.INTER_LANCZOS4 if (self.enable_lanczos_upscale and getattr(self, "_blur_mode", False)) else cv2.INTER_CUBIC
+            g_up = cv2.resize(img, None, fx=scale, fy=scale, interpolation=interp)
         except Exception:
             return []
         try:
@@ -405,23 +472,39 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         return list(best.values())
 
     def _detect_apriltags(self, gray: np.ndarray) -> List["AprilTagWarpNode._SimpleDetection"]:
-        """Bulletproof multi-variant detection.
+        """Bulletproof multi-variant detection with blur awareness.
 
         Strategy:
-        - Try several carefully chosen pre-processing variants (CLAHE, bilateral, tophat, adaptive threshold).
-        - For each variant, run base/sharp/high-res engines.
-        - Multi-scale upscaling passes for tiny/far tags.
-        - If we fail for several consecutive frames, enter a panic mode that relaxes
-          the decision margin and uses an ultra-high-resolution detector.
+        - Detect blur (variance of Laplacian) and, if blurry, generate extra variants
+          and prefer stronger detectors + larger upscales.
+        - Try several pre-processing variants (CLAHE, bilateral, tophat, adaptive threshold, blur-targeted).
+        - For each variant, run base/sharp/high-res (and extra-sharp if blurry).
+        - Multi-scale upscaling passes; in blur mode prefer larger scales and LANCZOS.
+        - If we fail for several frames, enter a panic mode with relaxed margin and ultra detector.
         """
         self._ensure_detectors()
 
-        min_dm = float(self.decision_margin)
-        results: List[List["AprilTagWarpNode._SimpleDetection"]] = []
-        variants = self._preprocess_variants(gray)
+        # Blur assessment (stored for telemetry)
+        self._blur_mode = bool(self._is_blurry(gray))
 
-        # Engines in descending order of speed; we will early-exit on success
-        engines = [self._detector, self._detector_sharp, self._detector_highres]
+        # Decision margin may be slightly relaxed in blur mode
+        min_dm = float(self.decision_margin * (0.9 if self._blur_mode else 1.0))
+        results: List[List["AprilTagWarpNode._SimpleDetection"]] = []
+
+        # Base variants, then add blur-specialized ones if needed
+        variants = self._preprocess_variants(gray)
+        if self._blur_mode:
+            try:
+                base_for_blur = self._apply_clahe_and_gamma(gray)
+            except Exception:
+                base_for_blur = gray
+            variants.extend(self._preprocess_blur_variants(base_for_blur))
+
+        # Engines (order reflects likelihood of success for blur vs. non-blur)
+        engines: List = []
+        if self._blur_mode and self._detector_xsharp is not None:
+            engines.append(self._detector_xsharp)
+        engines.extend([self._detector_sharp, self._detector_highres, self._detector])
         engines = [e for e in engines if e is not None]
 
         # 1) Straight detects on each preproc variant
@@ -435,12 +518,22 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
                         self._no_detect_streak = 0
                         return dedup
 
-        # 2) Multi-scale upscaling passes (helps tiny/far tags)
+        # 2) Multi-scale upscaling passes (helps tiny/far/blurred tags)
         if self.enable_multiscale:
-            pref_engine = self._detector_sharp or self._detector_highres or self._detector
+            pref_engine = (
+                self._detector_xsharp if self._blur_mode and self._detector_xsharp is not None else
+                self._detector_sharp or self._detector_highres or self._detector
+            )
             if pref_engine is not None:
+                scales = list(self.variant_scales)
+                # Add a larger blur-specific upscale if allowed
+                if self._blur_mode and self.blur_upscale > 1.01 and self.blur_upscale <= self.max_upscale:
+                    if all(abs(self.blur_upscale - s) > 1e-3 for s in scales):
+                        scales.append(self.blur_upscale)
+                # Try larger scales first when blurry
+                scales = sorted(scales, reverse=self._blur_mode)
                 for _, img in variants:
-                    for s in self.variant_scales:
+                    for s in scales:
                         if s <= 1.01:
                             continue
                         if s > self.max_upscale:
@@ -456,20 +549,22 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         # If we got here we didn't get 4 solid tags this frame
         self._no_detect_streak += 1
 
-        # 3) Panic mode: relax margin + ultra detector on strongest variants
+        # 3) Panic mode: relax margin + ultra/extra-sharp on strongest variants
         if self._no_detect_streak >= self.panic_after_frames:
-            emergency_dm = max(2.0, float(self.decision_margin) * float(self.emergency_low_dm_factor))
+            relax_factor = 0.75 if self._blur_mode else 1.0
+            emergency_dm = max(1.5 if self._blur_mode else 2.0, float(self.decision_margin) * float(self.emergency_low_dm_factor) * relax_factor)
             strong_variants = []
-            # Prefer CLAHE / bilateral / tophat if present
+            # Prefer edge/contrast-boosted variants if present
+            prefer = {"unsharp_strong", "lapsharp", "morphgrad", "tophat", "bilateral", "clahe"}
             for name, img in variants:
-                if name in ("clahe", "bilateral", "tophat"):
+                if name in prefer:
                     strong_variants.append(img)
             if not strong_variants:
                 strong_variants = [v for _, v in variants]
 
-            # Run ultra detector at native and max upscale
+            # Run ultra detector and then extra-sharp scaled if still blurry
             if self._detector_ultra is not None:
-                for img in strong_variants[:2]:  # cap work
+                for img in strong_variants[:3]:  # cap work
                     dets = self._detect_with_engine(img, self._detector_ultra)
                     if dets:
                         results.append(dets)
@@ -479,9 +574,15 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
                         if dets2:
                             results.append(dets2)
 
+            if self._blur_mode and self._detector_xsharp is not None and self.enable_multiscale:
+                s = float(min(self.max_upscale, max([1.5] + list(self.variant_scales))))
+                for img in strong_variants[:2]:
+                    dets3 = self._detect_scaled(img, s, self._detector_xsharp)
+                    if dets3:
+                        results.append(dets3)
+
             dedup = self._dedupe_best(results, emergency_dm)
             if len(dedup) >= 4:
-                # keep streak but reset after success so we don't stay in panic forever
                 self._no_detect_streak = 0
                 return dedup
 
