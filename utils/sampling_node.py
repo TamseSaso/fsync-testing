@@ -68,7 +68,7 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
     Output: dai.ImgFrame (sampled at specified interval)
     """
 
-    def __init__(self, sample_interval_seconds: Optional[float] = 5.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = None, ptp_slot_phase: float = 0.0, debug: bool = False) -> None:
+    def __init__(self, sample_interval_seconds: Optional[float] = 5.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = None, ptp_slot_phase: float = 0.0, debug: bool = False, tick_grace_sec: float = 0.006, arrival_latency_correction_sec: float = 0.0) -> None:
         super().__init__()
         
         self.input = self.createInput()
@@ -91,6 +91,9 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         self._target_start_slot: Optional[int] = None
         self._every_frame_mode = (self.shared_ticker is None and self.ptp_slot_period is None and self.sample_interval is None)
         self.debug = bool(debug)
+        # Tick alignment tuning
+        self.tick_grace_sec = float(tick_grace_sec) if tick_grace_sec is not None else 0.0
+        self.arrival_latency_correction_sec = float(arrival_latency_correction_sec or 0.0)
 
     def build(self, frames: dai.Node.Output) -> "FrameSamplingNode":
         frames.link(self.input)
@@ -146,19 +149,25 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
             # 1) Shared global ticker mode
             if self.shared_ticker is not None:
                 self._last_tick_idx = self.shared_ticker.wait_next_tick(self._last_tick_idx)
+                # Grace window: wait a few ms after the tick to let frames land
+                if self.tick_grace_sec > 0.0:
+                    time.sleep(min(self.tick_grace_sec, max(0.0, self.shared_ticker.period_sec * 0.25)))
                 with self.frame_lock:
                     frame = self.latest_frame
                     arrival = self.latest_arrival_mono
                 if frame is not None and arrival is not None:
-                    slot = self.shared_ticker.tick_index_for_time(arrival)
+                    corrected = arrival - self.arrival_latency_correction_sec
+                    slot = self.shared_ticker.tick_index_for_time(corrected)
                     if slot == self._last_tick_idx:
                         self.out.send(frame)
                         if self.debug:
-                            print(f"Frame sampled on global tick #{self._last_tick_idx} (arrival tick match) at {time.monotonic():.3f}s")
+                            print(
+                                f"Frame sampled on global tick #{self._last_tick_idx} (arrival match) at {time.monotonic():.3f}s; corrected_arrival={corrected:.6f} grace={self.tick_grace_sec:.3f}s"
+                            )
                     else:
                         if self.debug:
                             print(
-                                f"[SKIP] arrival tick {slot} != global tick {self._last_tick_idx} — dropping frame"
+                                f"[SKIP] corrected arrival tick {slot} != global tick {self._last_tick_idx} — dropping frame (arrival={arrival:.6f}, corrected={corrected:.6f}, grace={self.tick_grace_sec:.3f}s, corr={self.arrival_latency_correction_sec:.3f}s)"
                             )
                 continue
 
