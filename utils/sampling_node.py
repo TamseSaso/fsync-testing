@@ -133,7 +133,7 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
     Output: dai.ImgFrame (sampled at specified interval)
     """
 
-    def __init__(self, sample_interval_seconds: Optional[float] = 5.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = None, ptp_slot_phase: float = 0.0, debug: bool = False, tick_grace_sec: float = 0.001, arrival_latency_correction_sec: float = 0.0, barrier: bool = True, barrier_timeout_sec: float = 0.02, wait_window_sec: float = 0.040, auto_calibrate_correction: bool = True, dt_threshold_sec: float = 0.02) -> None:
+    def __init__(self, sample_interval_seconds: Optional[float] = 5.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = None, ptp_slot_phase: float = 0.0, debug: bool = False, tick_grace_sec: float = 0.001, arrival_latency_correction_sec: float = 0.0, barrier: bool = True, barrier_timeout_sec: float = 0.02, wait_window_sec: float = 0.040, auto_calibrate_correction: bool = True, dt_threshold_sec: float = 0.01) -> None:
         super().__init__()
         
         self.input = self.createInput()
@@ -265,6 +265,15 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                                 dt_threshold=self.dt_threshold_sec,
                                 timeout=self.barrier_timeout_sec,
                             )
+                        # If barrier fails or exceeds dt threshold, drop this frame and keep polling within the window
+                        if self.barrier_enabled and not barrier_ok:
+                            if self.debug:
+                                print(
+                                    f"[DROP] tick {self._last_tick_idx}: barrier failed/timeout (spread={spread*1000:.1f}ms, thr={self.dt_threshold_sec*1000:.1f}ms)"
+                                )
+                            time.sleep(0.0005)
+                            continue
+
                         # Proportional fine-tune towards tick start (minimize delta within tick)
                         delta = corrected - tick_start  # seconds from tick start
                         kp = 0.2
@@ -307,19 +316,27 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                                     dt_threshold=self.dt_threshold_sec,
                                     timeout=self.barrier_timeout_sec,
                                 )
-                            # Proportional fine-tune towards tick start
-                            delta = corrected - tick_start
-                            kp = 0.2
-                            adj = -kp * delta
-                            adj = max(-0.004, min(0.004, adj))
-                            self._dyn_arrival_corr = max(self._dyn_corr_min, min(self._dyn_corr_max, self._dyn_arrival_corr + adj))
+                            # If barrier fails or exceeds dt threshold, drop this frame (end of window)
+                            if self.barrier_enabled and not barrier_ok:
+                                if self.debug:
+                                    print(
+                                        f"[DROP] tick {self._last_tick_idx}: barrier failed/timeout at window end (spread={spread*1000:.1f}ms, thr={self.dt_threshold_sec*1000:.1f}ms)"
+                                    )
+                                # do not send; leave `sent` as False so the SKIP log below will trigger
+                            else:
+                                # Proportional fine-tune towards tick start
+                                delta = corrected - tick_start
+                                kp = 0.2
+                                adj = -kp * delta
+                                adj = max(-0.004, min(0.004, adj))
+                                self._dyn_arrival_corr = max(self._dyn_corr_min, min(self._dyn_corr_max, self._dyn_arrival_corr + adj))
 
-                            self.out.send(frame)
-                            sent = True
-                            if self.debug:
-                                print(
-                                    f"Frame sampled on global tick #{self._last_tick_idx} (post-window, barrier={'ok' if barrier_ok else 'timeout'}) at {time.monotonic():.3f}s; corrected_arrival={corrected:.6f} Δtick={delta*1000:.1f}ms spread={spread*1000:.1f}ms window={self.wait_window_sec:.3f}s corr={self._dyn_arrival_corr:.3f}s"
-                                )
+                                self.out.send(frame)
+                                sent = True
+                                if self.debug:
+                                    print(
+                                        f"Frame sampled on global tick #{self._last_tick_idx} (post-window, barrier={'ok' if barrier_ok else 'timeout'}) at {time.monotonic():.3f}s; corrected_arrival={corrected:.6f} Δtick={delta*1000:.1f}ms spread={spread*1000:.1f}ms window={self.wait_window_sec:.3f}s corr={self._dyn_arrival_corr:.3f}s"
+                                    )
 
                 if not sent and self.debug:
                     print(
