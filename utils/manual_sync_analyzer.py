@@ -9,7 +9,7 @@ warp_nodes = []
 visualizers = []
 
 def deviceAnalyzer(
-    node_out,
+    latest_frames,
     threshold_multiplier: float = 1.47,
     visualizer = None,
     device = None,
@@ -34,7 +34,7 @@ def deviceAnalyzer(
     """
     # AprilTag warp (explicit output size is required by AprilTagWarpNode)
     warp_w, warp_h = int(warp_size[0]), int(warp_size[1])
-    warp_node = AprilTagWarpNode(out_width=warp_w, out_height=warp_h).build(node_out)
+    warp_node = AprilTagWarpNode(out_width=warp_w, out_height=warp_h).build(latest_frames[0].out)
     warp_nodes.append(warp_node)
 
     # LED grid analysis
@@ -49,7 +49,7 @@ def deviceAnalyzer(
 
     if debug == True:
         suffix = f" [{device.getDeviceId()}]"
-        visualizer.addTopic("Input Stream" + suffix, node_out, "images")
+        visualizer.addTopic("Input Stream" + suffix, latest_frames[0].out, "images")
         visualizer.addTopic("Warped Sample" + suffix, warp_node.out, "images")
         visualizer.addTopic("LED Grid" + suffix, led_visualizer.out, "images")
 
