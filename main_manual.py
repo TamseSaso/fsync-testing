@@ -13,7 +13,7 @@ DEVICE_INFOS = [dai.DeviceInfo(ip) for ip in ["10.12.211.220", "10.12.211.84"]] 
 assert len(DEVICE_INFOS) > 1, "At least two devices are required for this example."
 # Sampling interval in seconds - frames will be polled and analyzed at this interval
 SAMPLE_INTERVAL = 5.0
-DEBUG = False
+DEBUG = True
 
 # ---------------------------------------------------------------------------
 # Pipeline creation - creates output queue instead of feeding to host nodes
