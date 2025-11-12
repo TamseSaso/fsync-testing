@@ -95,8 +95,8 @@ with contextlib.ExitStack() as stack:
 
     # Register pipelines with the visualizer and start them
     for p in pipelines:
-        visualizer.registerPipeline(p)
         p.start()
+        visualizer.registerPipeline(p)
 
     print("=== Waiting for first frames from all devices...")
     receivedFrames = [False] * len(queues)
