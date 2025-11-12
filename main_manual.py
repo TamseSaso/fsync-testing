@@ -31,7 +31,7 @@ def createPipeline(pipeline: dai.Pipeline, socket: dai.CameraBoardSocket = dai.C
     node_out.link(manip.inputImage)
     node_out = manip.out
     # No host output queue here; host nodes consume the stream
-    output = None
+    output = node_out.createOutputQueue()
     if SET_MANUAL_EXPOSURE:
         camRgb.initialControl.setManualExposure(6000, 100)
         camRgb.initialControl.setAutoWhiteBalanceMode(dai.CameraControl.AutoWhiteBalanceMode.DAYLIGHT)
@@ -55,6 +55,7 @@ with contextlib.ExitStack() as stack:
     analyzers = []
     warp_nodes = []
     comparisons = []
+    latest_frames = {}
 
     for deviceInfo in DEVICE_INFOS:
         pipeline = stack.enter_context(dai.Pipeline(dai.Device(deviceInfo)))
@@ -67,7 +68,9 @@ with contextlib.ExitStack() as stack:
         socket = device.getConnectedCameras()[0]
         pipeline, out_q, node_out = createPipeline(pipeline, socket)
 
-        samplers, warp_nodes, analyzers = deviceAnalyzer(node_out, threshold_multiplier = 1.40, visualizer = visualizer, device = device, debug = DEBUG)
+        queues.append(out_q)
+
+        samplers, warp_nodes, analyzers = deviceAnalyzer(latest_frames, threshold_multiplier = 1.40, visualizer = visualizer, device = device, debug = DEBUG)
 
         pipelines.append(pipeline)
         device_ids.append(deviceInfo.getXLinkDeviceDesc().name)
@@ -83,6 +86,10 @@ with contextlib.ExitStack() as stack:
 
     # Visualizer drives display and sync; no host queue consumption here
     while True:
+        # Collect newest frames from each device output queue (non-blocking)
+        for idx, q in enumerate(queues):
+            while q.has():
+                latest_frames[idx] = q.get()
         key = visualizer.waitKey(1)
         if key == ord("q"):
             break
