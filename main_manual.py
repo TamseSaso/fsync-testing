@@ -1,6 +1,6 @@
 import contextlib
 import depthai as dai
-from utils.sync_analyzer import deviceAnalyzer, deviceComparison
+from utils.manual_sync_analyzer import deviceAnalyzer, deviceComparison
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
