@@ -1,4 +1,5 @@
 from .sampling_node import FrameSamplingNode
+from .sampling_node import M8FsyncSamplingNode
 from .apriltag_warp_node import AprilTagWarpNode
 from .led_grid_analyzer import LEDGridAnalyzer
 from .led_grid_comparison import LEDGridComparison
@@ -8,6 +9,70 @@ samplers = []
 analyzers = []
 warp_nodes = []
 visualizers = []
+
+def deviceAnalyzerM8Fsync(
+    nodes_out,
+    undersampling_factor: int = 10,
+    frame_lost_threshold_sec: float = 0,
+    recv_all_timeout_sec: int = 10,
+    sync_threshold_sec: float = 0,
+    threshold_multiplier: float = 1.47,
+    visualizer = None,
+    deviceIds = None,
+    warp_size: tuple[int, int] = (1024, 1024),
+    debug: bool = False,
+):
+    """
+    Build the per-device chain: FrameSamplingNode -> AprilTagWarpNode -> LEDGridAnalyzer.
+
+    Appends created nodes to the module-level collections and returns the same
+    collections so the caller can wait on samplers etc.
+
+    Args:
+        nodes_out: Upstream Node.Output to sample from.
+        sample_interval_seconds: Fallback sample interval if not using ticker.
+        threshold_multiplier: Analyzer threshold multiplier.
+        warp_size: (width, height) for the perspective-warped crop produced by AprilTagWarpNode.
+
+    Returns:
+        (samplers, warp_nodes, analyzers): the module-level lists containing all created nodes.
+    """
+    # Sample frames from the live stream
+    sampler = M8FsyncSamplingNode(
+        num_cameras=len(nodes_out),
+        undersampling_factor=undersampling_factor,
+        frame_lost_threshold_sec=frame_lost_threshold_sec,
+        recv_all_timeout_sec=recv_all_timeout_sec,
+        sync_threshold_sec=sync_threshold_sec,
+        debug=False,
+        device_ids=deviceIds
+    ).build(nodes_out)
+
+    # AprilTag warp (explicit output size is required by AprilTagWarpNode)
+    warp_w, warp_h = int(warp_size[0]), int(warp_size[1])
+    for i in range(len(nodes_out)):
+        warp_node = AprilTagWarpNode(out_width=warp_w, out_height=warp_h).build(sampler.outputs[i])
+        warp_nodes.append(warp_node)
+
+        # LED grid analysis
+        led_analyzer = LEDGridAnalyzer(
+            threshold_multiplier=threshold_multiplier,
+            debug=debug,
+        ).build(warp_node.out)
+        analyzers.append(led_analyzer)
+
+        led_visualizer = LEDGridVisualizer(output_size=(1024, 1024)).build(led_analyzer.out)
+        visualizers.append(led_visualizer)
+
+        if debug == True:
+            assert(len(nodes_out) == len(deviceIds))
+            suffix = f" [{deviceIds[i]}]"
+            visualizer.addTopic("Input Stream" + suffix, nodes_out[i], "images")
+            visualizer.addTopic("Sample" + suffix, sampler.outputs[i], "images")
+            visualizer.addTopic("Warped Sample" + suffix, warp_node.out, "images")
+            visualizer.addTopic("LED Grid" + suffix, led_visualizer.out, "images")
+
+    return warp_nodes, analyzers, sampler
 
 def deviceAnalyzer(
     node_out,

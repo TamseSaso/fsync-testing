@@ -3,6 +3,8 @@ import threading
 import depthai as dai
 from typing import Optional
 
+from datetime import datetime, timedelta
+
 class SharedTicker:
     """A simple cross-node ticker that can be periodic or manual.
     - Periodic mode: pass a positive `period_sec` to tick on a wall clock.
@@ -59,6 +61,108 @@ class SharedTicker:
                 self._cond.wait()
             return self._tick_idx
 
+class M8FsyncSamplingNode(dai.node.ThreadedHostNode):
+    """Samples frames from input at specified intervals and forwards them to output.
+    
+    """
+
+    def __init__(self,
+        num_cameras: int = 2,
+        undersampling_factor: int = 10,
+        frame_lost_threshold_sec: float = 0,
+        recv_all_timeout_sec: int = 10,
+        sync_threshold_sec: float = 0,
+        debug: bool = False,
+        device_ids: list[str] = None) -> None:
+        super().__init__()
+
+        self.num_cameras = num_cameras
+        self.inputs = [self.createInput() for _ in range(num_cameras)]
+
+        for i in self.inputs:
+            i.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
+
+        self.outputs = [self.createOutput() for _ in range(num_cameras)]
+
+        for o in self.outputs:
+            o.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
+
+        self.latest_frames = {}
+        self.receivedFrames = [False for _ in range(num_cameras)]
+        self.previous_frame_rcv_timestamp = {}
+        
+        self.initially_locked = False
+        self.undersampling_factor = undersampling_factor
+        self.debug = debug
+
+        self.frame_lost_threshold_sec = frame_lost_threshold_sec
+        self.recv_all_timeout_sec = recv_all_timeout_sec
+        self.sync_threshold_sec = sync_threshold_sec
+
+        self.device_ids = device_ids
+    
+    def build(self, frames: list[dai.Node.Output]):
+        assert(len(frames) == self.num_cameras)
+        for i in range(len(frames)):
+            frames[i].link(self.inputs[i])
+        return self
+
+    def run(self) -> None:
+        self.start_time = datetime.now()
+        count = 0
+        while self.isRunning():
+            self.all_received = True
+            # -------------------------------------------------------------------
+            # Collect the newest frame from each queue (non‑blocking)
+            # -------------------------------------------------------------------
+            for idx, i in enumerate(self.inputs):
+                self.all_received &= self.receivedFrames[idx]
+
+                if self.receivedFrames[idx]:
+                    ts = self.previous_frame_rcv_timestamp[idx]
+
+                    if datetime.now() - ts > timedelta(microseconds=round(self.frame_lost_threshold_sec*1e6)):
+                        print(f"[{self.device_ids[idx]}]: Frame lost")
+                        exit(1)
+                while i.has():
+                    self.latest_frames[idx] = i.get()
+                    self.previous_frame_rcv_timestamp[idx] = datetime.now()
+                    if not self.receivedFrames[idx]:
+                        print("=== Received frame from", self.device_ids[idx])
+                        self.receivedFrames[idx] = True
+
+            end_time = datetime.now()
+            elapsed_sec = (end_time - self.start_time).total_seconds()
+            if not self.all_received:
+                if elapsed_sec >= self.recv_all_timeout_sec:
+                    print("Timeout: Didn't receive all frames in time")
+                    exit(1)
+
+            # -------------------------------------------------------------------
+            # Synchronise: we need at least one frame from every camera and their
+            # timestamps must align within sync_threshold_sec.
+            # -------------------------------------------------------------------
+            if len(self.latest_frames) == len(self.inputs):
+                ts_values = [f.getTimestamp(dai.CameraExposureOffset.END).total_seconds() for f in self.latest_frames.values()]
+
+                delta = abs(max(ts_values) - min(ts_values))
+
+                if not self.initially_locked and delta < self.sync_threshold_sec:
+                    self.initially_locked = True
+                
+                if self.debug:
+                    print(f"M8FsyncSamplingNode: delta = {delta}")
+
+                if self.initially_locked and delta > self.sync_threshold_sec:
+                    print("Synchronization lost")
+                    exit(1)
+
+                if count % self.undersampling_factor == 0:
+                    for i in range(len(self.inputs)):
+                        self.outputs[i].send(self.latest_frames[i])
+                count += 1
+
+                self.latest_frames.clear()  # Wait for next batch
 
 class FrameSamplingNode(dai.node.ThreadedHostNode):
     """Samples frames from input at specified intervals and forwards them to output.
