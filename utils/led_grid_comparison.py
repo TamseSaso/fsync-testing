@@ -354,18 +354,22 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 # subtle grid
                 cv2.rectangle(out, (x1, y1), (x2 - 1, y2 - 1), (90, 90, 90), 1)
 
-        # Legend - show all stream colors
+        # Legend - show all stream colors (always show all configured streams, not just active ones)
         legend_y = 10
         legend_spacing = 28
-        for i in range(min(num_masks, len(self._color_palette))):
+        num_streams_to_show = max(num_masks, self._num_streams) if hasattr(self, '_num_streams') else num_masks
+        for i in range(min(num_streams_to_show, len(self._color_palette))):
             color = self._color_palette[i]
             cv2.rectangle(out, (10, legend_y), (22, legend_y + 12), color, -1)
-            cv2.putText(out, f"Stream #{i}", (28, legend_y + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            # Show if this stream has data
+            has_data = i < num_masks
+            label = f"Stream #{i}" + (" (active)" if has_data else " (waiting)")
+            cv2.putText(out, label, (28, legend_y + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             legend_y += legend_spacing
         
-        if num_masks > 0:
+        if num_masks > 1:
             cv2.rectangle(out, (10, legend_y), (22, legend_y + 12), (255, 255, 255), -1)
-            cv2.putText(out, "All ON", (28, legend_y + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.putText(out, f"All {num_masks} ON", (28, legend_y + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
         return out
 
@@ -474,6 +478,11 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
             f"LEDGridComparison started: {self._num_streams} streams, {self.grid_size}x{self.grid_size}, "
             f"out={self.output_w}x{self.output_h}, period={self.led_period_us}us, pass_ratio={self.pass_ratio:.2f}"
         )
+        num_host_queues = len([q for q in self._queues if q is not None])
+        num_linked_inputs = len(self._inputs)
+        print(f"LEDGridComparison: Using {num_host_queues} host queues, {num_linked_inputs} linked inputs")
+        if self._num_streams != num_host_queues + num_linked_inputs:
+            print(f"WARNING: Stream count mismatch! _num_streams={self._num_streams}, queues={num_host_queues}, inputs={num_linked_inputs}")
 
         while self.isRunning():
             try:
@@ -537,6 +546,11 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
 
                 # Check how many streams have data
                 available_streams = [i for i in range(self._num_streams) if self._last_states[i] is not None]
+                
+                # Debug: periodically log stream status
+                if _t.time() % 5.0 < 0.1:  # Log roughly every 5 seconds
+                    print(f"LEDGridComparison: {len(available_streams)}/{self._num_streams} streams have data. "
+                          f"Streams with data: {available_streams}")
                 
                 # If no streams have data yet
                 if len(available_streams) == 0:
