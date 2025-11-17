@@ -52,6 +52,9 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         self.out_report = self.createOutput()
         self.out_report.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
 
+        self.out_timedelta = self.createOutput()
+        self.out_timedelta.setPossibleDatatypes([(float, True)])
+
         # Lightweight tick input to attach/schedule this host node in a pipeline
         self._tickIn = self.createInput()
         self._tickIn.setPossibleDatatypes([
@@ -752,6 +755,9 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 )
                 report_frame = self._create_imgframe(report_img, ref_ts, max_seq)
                 self.out_report.send(report_frame)
+                
+                # Send timedelta output (only when all streams are available)
+                self.out_timedelta.send(max_dt_squares_sec)
                 
                 # Mark all streams as compared
                 for i in range(self._num_streams):

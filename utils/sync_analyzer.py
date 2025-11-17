@@ -152,5 +152,5 @@ def deviceComparison(analyzers, warp_nodes, comparisons, sync_threshold_sec, gri
         if debug == True:
             visualizer.addTopic("LED Sync Overlay", led_cmp.out_overlay, "images")
             visualizer.addTopic("LED Sync Report", led_cmp.out_report, "images")
-        return None
+        return led_cmp
     return None
