@@ -53,7 +53,7 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         self.out_report.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
 
         self.out_timedelta = self.createOutput()
-        self.out_timedelta.setPossibleDatatypes([(float, True)])
+        self.out_timedelta.setPossibleDatatypes([(dai.DatatypeEnum.Buffer, True)])
 
         # Lightweight tick input to attach/schedule this host node in a pipeline
         self._tickIn = self.createInput()
@@ -214,6 +214,15 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         img.setSequenceNum(int(seq))
         img.setTimestamp(ts)
         return img
+
+    def _create_timedelta_buffer(self, dt_sec: float, ts, seq: int) -> dai.Buffer:
+        """Create a DAI buffer containing the timedelta value as float32."""
+        buffer = dai.Buffer()
+        data = np.array([float(dt_sec)], dtype=np.float32)
+        buffer.setData(data.tobytes())
+        buffer.setSequenceNum(int(seq))
+        buffer.setTimestamp(ts)
+        return buffer
 
     def _send_placeholder(self, text_line1: str = "Waiting for LED analyzer streams...", text_line2: Optional[str] = None) -> None:
         if text_line2 is None:
@@ -757,7 +766,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 self.out_report.send(report_frame)
                 
                 # Send timedelta output (only when all streams are available)
-                self.out_timedelta.send(max_dt_squares_sec)
+                timedelta_buffer = self._create_timedelta_buffer(max_dt_squares_sec, ref_ts, max_seq)
+                self.out_timedelta.send(timedelta_buffer)
                 
                 # Mark all streams as compared
                 for i in range(self._num_streams):

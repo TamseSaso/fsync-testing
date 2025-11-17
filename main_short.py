@@ -1,5 +1,6 @@
 import contextlib
 import depthai as dai
+import numpy as np
 from utils.sync_analyzer import deviceAnalyzer, deviceComparison
 from utils.sampling_node import SharedTicker
 # ---------------------------------------------------------------------------
@@ -81,12 +82,17 @@ with contextlib.ExitStack() as stack:
 
 
     # Register comparison topics before starting pipelines (required by RemoteConnection)
-    deviceComparison(analyzers, warp_nodes, comparisons, SYNC_THRESHOLD_SEC, visualizer=visualizer, debug = DEBUG)
+    led_cmp = deviceComparison(analyzers, warp_nodes, comparisons, SYNC_THRESHOLD_SEC, visualizer=visualizer, debug = DEBUG)
 
     # Register pipelines with the visualizer before starting them, so topics can be created.
     for p in pipelines:
         p.start()
         visualizer.registerPipeline(p)
+
+    # Create output queue for timedelta values (after pipelines are started)
+    timedelta_queue = None
+    if led_cmp is not None:
+        timedelta_queue = led_cmp.out_timedelta.createOutputQueue(maxSize=4, blocking=False)
 
     # Wait until every sampler has received at least one frame; start the global ticker only if enabled
     if shared_ticker is not None:
@@ -94,8 +100,23 @@ with contextlib.ExitStack() as stack:
     for s in samplers:
         s.wait_first_frame(timeout=None)
 
-    # Visualizer drives display and sync; no host queue consumption here
+    # Visualizer drives display and sync; also check timedelta values
     while True:
         key = visualizer.waitKey(1)
         if key == ord("q"):
             break
+        
+        # Check timedelta values if queue is available
+        if timedelta_queue is not None:
+            try:
+                dt_buffer = timedelta_queue.tryGet()
+                if dt_buffer is not None:
+                    # Decode float value from buffer
+                    dt_sec = np.frombuffer(dt_buffer.getData(), dtype=np.float32)[0]
+                    # Check if dt is okay (you can add your own validation here)
+                    if dt_sec > SYNC_THRESHOLD_SEC:
+                        print(f"Warning: dT={dt_sec:.6f}s exceeds threshold {SYNC_THRESHOLD_SEC:.6f}s")
+                    # else:
+                    #     print(f"dT={dt_sec:.6f}s is okay")
+            except Exception as e:
+                pass  # Ignore errors in timedelta reading
