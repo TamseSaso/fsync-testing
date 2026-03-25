@@ -1,7 +1,12 @@
+import logging
 import cv2
 import numpy as np
 import depthai as dai
 from typing import Optional
+
+from .health import NodeHealth
+
+log = logging.getLogger(__name__)
 
 
 class LEDGridAnalyzer(dai.node.ThreadedHostNode):
@@ -13,7 +18,8 @@ class LEDGridAnalyzer(dai.node.ThreadedHostNode):
 
     def __init__(self, grid_size: int = 32, threshold_multiplier: float = 1.47, bottom_row_threshold_scale: float = 0.82, debug: bool = False) -> None:
         super().__init__()
-        
+        self.health = NodeHealth()
+
         self.input = self.createInput()
         self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
         
@@ -24,6 +30,7 @@ class LEDGridAnalyzer(dai.node.ThreadedHostNode):
         self.threshold_multiplier = threshold_multiplier
         self.bottom_row_threshold_scale = bottom_row_threshold_scale
         self.debug = bool(debug)
+        self._last_grid_state: Optional[np.ndarray] = None
         
     def build(self, frames: dai.Node.Output) -> "LEDGridAnalyzer":
         frames.link(self.input)
@@ -123,7 +130,7 @@ class LEDGridAnalyzer(dai.node.ThreadedHostNode):
         return buffer
 
     def run(self) -> None:
-        print(f"LEDGridAnalyzer started with {self.grid_size}x{self.grid_size} grid")
+        log.info(f"LEDGridAnalyzer started with {self.grid_size}x{self.grid_size} grid")
         
         while self.isRunning():
             try:
@@ -149,12 +156,14 @@ class LEDGridAnalyzer(dai.node.ThreadedHostNode):
                     _t.sleep(0.001)
                     continue
 
+                self.health.record_received()
                 image = frame_msg.getCvFrame()
                 if image is None:
                     continue
-                
+
                 # Analyze the grid
                 grid_state, overall_avg_brightness = self._analyze_grid(image)
+                self._last_grid_state = grid_state
                 
                 # Calculate dynamic threshold
                 dynamic_threshold = overall_avg_brightness * self.threshold_multiplier
@@ -176,13 +185,16 @@ class LEDGridAnalyzer(dai.node.ThreadedHostNode):
                 # Create output buffer with grid data, decoded values, and metadata
                 buffer_msg = self._create_buffer(grid_state_out, overall_avg_brightness, speed, intervals, frame_msg)
                 self.out.send(buffer_msg)
-                
+                self.health.record_produced()
+
                 # For logging, match the consumer's simple global thresholding
                 num_leds_on = np.sum(grid_state_out > dynamic_threshold)
                 
                 if getattr(self, "debug", False):
-                    print(f"Grid analyzed: {num_leds_on} LEDs above threshold | Speed: {speed}, Intervals: {intervals} (0b{intervals:016b}) | (avg={overall_avg_brightness:.3f} excl. bottom row, global_thresh={dynamic_threshold:.3f}, bottom_thresh={bottom_dynamic_threshold:.3f})")
+                    log.debug(
+                        f"Grid analyzed: {num_leds_on} LEDs above threshold | Speed: {speed}, Intervals: {intervals} (0b{intervals:016b}) | (avg={overall_avg_brightness:.3f} excl. bottom row, global_thresh={dynamic_threshold:.3f}, bottom_thresh={bottom_dynamic_threshold:.3f})"
+                    )
                 
             except Exception as e:
-                print(f"LEDGridAnalyzer error: {e}")
+                log.error(f"LEDGridAnalyzer error: {e}")
                 continue

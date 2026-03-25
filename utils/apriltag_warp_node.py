@@ -1,10 +1,15 @@
-from typing import List, Tuple
+import logging
+from typing import List, Optional, Tuple
 
 import time
 import re
 import cv2
 import numpy as np
 import depthai as dai
+
+from .health import NodeHealth
+
+log = logging.getLogger(__name__)
 
 try:
     from pupil_apriltags import Detector as AprilTagDetector
@@ -103,6 +108,7 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         alt_families: str | None = None,
     ) -> None:
         super().__init__()
+        self.health = NodeHealth()
 
         # IO setup: non-blocking queues with small buffers to keep camera flowing
         self.input = self.createInput()
@@ -162,8 +168,8 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         self.z_offset = z_offset  # Z-axis offset in meters
         # Margins/paddings tweak the final crop to match panel framing
         self.margin = 0.01
-        self.padding_left = -0.015
-        self.padding_right = -0.005
+        self.padding_left = 0.01
+        self.padding_right = -0.034
         self.bottom_right_y_offset = 0.016
         self.bottom_y_offset = 0.01
 
@@ -181,6 +187,12 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
 
         # Track consecutive no-detection frames to trigger panic mode
         self._no_detect_streak: int = 0
+
+        # Fast-path: cache the perspective transform and reuse for N frames
+        self._cached_H: Optional[np.ndarray] = None
+        self._cached_H_streak: int = 0
+        self._fast_path_verify_interval: int = 5  # re-detect every N frames
+        self._fast_path_min_streak: int = 3  # need N consecutive successes before caching
         self.emergency_low_dm_factor = float(emergency_low_dm_factor)
         self.panic_after_frames = int(panic_after_frames)
 
@@ -639,12 +651,15 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
         # Return best we managed to find (possibly < 4); caller handles persistence/hold
         return self._dedupe_best(results, min_dm)
 
-    def _send_img(self, bgr: np.ndarray, src: dai.ImgFrame) -> None:
+    def _send_img(self, frame: np.ndarray, src: dai.ImgFrame) -> None:
         img = dai.ImgFrame()
-        img.setType(dai.ImgFrame.Type.BGR888i)
+        if frame.ndim == 2:
+            img.setType(dai.ImgFrame.Type.GRAY8)
+        else:
+            img.setType(dai.ImgFrame.Type.BGR888i)
         img.setWidth(self.out_w)
         img.setHeight(self.out_h)
-        img.setData(bgr.tobytes())
+        img.setData(frame.tobytes())
         img.setSequenceNum(src.getSequenceNum())
         img.setTimestamp(src.getTimestamp())
         self.out.send(img)
@@ -674,12 +689,29 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
                 time.sleep(0.001)
                 continue
 
-            bgr = frame_msg.getCvFrame()
-            if bgr is None:
+            self.health.record_received()
+            frame_cv = frame_msg.getCvFrame()
+            if frame_cv is None:
                 continue
 
-            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+            if frame_cv.ndim == 3:
+                gray = cv2.cvtColor(frame_cv, cv2.COLOR_BGR2GRAY)
+            else:
+                gray = frame_cv
             now = time.time()
+
+            # Fast-path: reuse cached transform if stable
+            if (
+                self._cached_H is not None
+                and self._cached_H_streak >= self._fast_path_min_streak
+                and (self.health.frames_received % self._fast_path_verify_interval) != 0
+            ):
+                warped = cv2.warpPerspective(frame_cv, self._cached_H, (self.out_w, self.out_h))
+                self._last_warp_frame = warped
+                self._last_warp_time = now
+                self._send_img(warped, frame_msg)
+                self.health.record_produced()
+                continue
 
             # 1) Detect tags (robust multi-variant pipeline)
             detections = self._detect_apriltags(gray)
@@ -748,11 +780,17 @@ class AprilTagWarpNode(dai.node.ThreadedHostNode):
                 area = cv2.contourArea(src_pts.reshape(-1, 1, 2))
                 if area >= 10.0:
                     H = cv2.getPerspectiveTransform(src_pts, dst_quad)
-                    warped = cv2.warpPerspective(bgr, H, (self.out_w, self.out_h))
+                    warped = cv2.warpPerspective(frame_cv, H, (self.out_w, self.out_h))
                     self._last_warp_frame = warped
                     self._last_warp_time = now
+                    self._cached_H = H
+                    self._cached_H_streak += 1
                     self._send_img(warped, frame_msg)
+                    self.health.record_produced()
                     continue
+
+            # Detection failed — invalidate fast-path cache
+            self._cached_H_streak = 0
 
             # 4) If not enough tags: briefly hold last good warp to keep stream alive
             if (

@@ -1,3 +1,4 @@
+import logging
 import cv2
 import numpy as np
 import depthai as dai
@@ -6,6 +7,10 @@ import time as _t
 
 from datetime import timedelta as _td
 from collections import deque
+
+from .timestamp_rendezvous import TimestampRendezvous
+
+log = logging.getLogger(__name__)
 
 
 class LEDGridComparison(dai.node.ThreadedHostNode):
@@ -81,8 +86,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         self._last_states: List[Optional[Tuple]] = []
         # Track last compared sequence numbers per stream
         self._compared_seqs: List[int] = []
-        # Small buffers to tolerate skipped/misaligned frames
-        self._buffers: List[deque] = []
+        # Timestamp-based rendezvous for matching frames across streams
+        self._rendezvous: Optional[TimestampRendezvous] = None
         # Throttle for "waiting" overlay/report updates
         self._last_waiting_time = 0.0
         
@@ -152,7 +157,11 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         # Initialize per-stream state
         self._last_states = [None] * self._num_streams
         self._compared_seqs = [-1] * self._num_streams
-        self._buffers = [deque(maxlen=8) for _ in range(self._num_streams)]
+        self._rendezvous = TimestampRendezvous(
+            n_streams=self._num_streams,
+            match_threshold_sec=self.sync_threshold_sec if self.sync_threshold_sec else 0.5,
+            max_buffered=16,
+        )
 
     # --- Utility ----------------------------------------------------------
     def _parse_buffer(self, buf: dai.Buffer):
@@ -189,21 +198,16 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
         # positive cols -> shift right (later in time)
         return np.roll(mask, shift=cols, axis=1)
 
-    def _pop_latest_frames(self):
+    def _submit_to_rendezvous(self, stream_idx: int, parsed: Tuple):
+        """Submit a parsed buffer to the rendezvous for timestamp matching.
+
+        Returns a matched group of N parsed tuples, or None.
         """
-        Return the latest parsed tuples from all streams if all have at least one item.
-        Returns list of tuples, one per stream, or None if any stream is empty.
-        Each tuple layout: (grid, avg, mult, speed, intervals, ts, seq)
-        """
-        if self._num_streams == 0:
+        if self._rendezvous is None:
             return None
-        if any(len(buf) == 0 for buf in self._buffers):
-            return None
-        frames = [buf[-1] for buf in self._buffers]
-        # Clear all buffers after extracting latest
-        for buf in self._buffers:
-            buf.clear()
-        return frames
+        ts = parsed[5]  # timedelta from device
+        ts_sec = ts.total_seconds() if hasattr(ts, "total_seconds") else float(ts)
+        return self._rendezvous.submit(stream_idx, ts_sec, parsed)
 
     def _create_imgframe(self, bgr: np.ndarray, ts, seq: int) -> dai.ImgFrame:
         img = dai.ImgFrame()
@@ -479,10 +483,10 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
     # --- Main loop --------------------------------------------------------
     def run(self) -> None:
         if self._num_streams == 0:
-            print("LEDGridComparison: No streams configured. Call set_queues() first.")
+            log.info("LEDGridComparison: No streams configured. Call set_queues() first.")
             return
         
-        print(
+        log.info(
             f"LEDGridComparison started: {self._num_streams} streams, {self.grid_size}x{self.grid_size}, "
             f"out={self.output_w}x{self.output_h}, period={self.led_period_us}us, pass_ratio={self.pass_ratio:.2f}"
         )
@@ -500,9 +504,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                             m = self._tickIn.get()
                         if m is None:
                             break
-                except Exception:
-                    pass
-
+                except Exception as e:
+                    log.debug("Tick drain error: %s", e)
 
                 # Drain latest packets from all streams
                 buffers: List[Optional[dai.Buffer]] = [None] * self._num_streams
@@ -535,26 +538,27 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                         except Exception:
                             buffers[i] = None
 
-                # Parse incoming packets and update last states
+                # Parse incoming packets, update last states, and submit to rendezvous
+                matched_group = None
                 for i in range(self._num_streams):
                     if buffers[i] is not None:
                         try:
                             parsed = self._parse_buffer(buffers[i])
                             self._last_states[i] = parsed
-                            # Append only if this sequence is new (avoid duplicates)
-                            if len(self._buffers[i]) == 0 or parsed[6] != self._buffers[i][-1][6]:
-                                self._buffers[i].append(parsed)
+                            result = self._submit_to_rendezvous(i, parsed)
+                            if result is not None:
+                                matched_group = result
                         except Exception as e:
-                            print(f"Comparison parse error for stream {i}: {e}")
+                            log.error("Comparison parse error for stream %d: %s", i, e)
 
                 # Check how many streams have data
                 available_streams = [i for i in range(self._num_streams) if self._last_states[i] is not None]
-                
+
                 # If no streams have data yet
                 if len(available_streams) == 0:
                     now = _t.time()
                     if now - self._last_placeholder_time > 0.5:
-                        self._send_placeholder("Waiting for LED analyzer streams...", 
+                        self._send_placeholder("Waiting for LED analyzer streams...",
                                              f"No packets received yet from any of {self._num_streams} streams.")
                         self._last_placeholder_time = now
                     _t.sleep(0.001)
@@ -570,15 +574,13 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                             avail_configs.append((speed, intervals))
                         else:
                             avail_configs.append((None, None))
-                    
-                    # Throttle UI updates while waiting
+
                     now = _t.time()
                     if now - self._last_waiting_time <= 0.5:
                         _t.sleep(0.001)
                         continue
                     self._last_waiting_time = now
-                    
-                    # Create partial overlay with available streams
+
                     masks = []
                     for i in range(self._num_streams):
                         if self._last_states[i] is not None:
@@ -586,32 +588,29 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                             thr = self._dynamic_threshold(avg, mult)
                             mask = self._mask_from_grid(grid, thr)
                         else:
-                            # Create empty mask with same shape
                             if len(masks) > 0:
                                 mask = np.zeros_like(masks[0])
                             else:
                                 mask = np.zeros((self.grid_size, self.grid_size), dtype=bool)
                         masks.append(mask)
-                    
+
                     overlay_img = self._draw_overlay(masks)
-                    # Use timestamp from first available stream
                     _, _, _, _, _, ts_use, seq_use = self._last_states[available_streams[0]]
                     overlay_frame = self._create_imgframe(overlay_img, ts_use, seq_use)
                     self.out_overlay.send(overlay_frame)
-                    
+
                     report_img = self._draw_waiting_report(missing_streams, avail_configs)
                     report_frame = self._create_imgframe(report_img, ts_use, seq_use)
                     self.out_report.send(report_frame)
                     _t.sleep(0.001)
                     continue
 
-                # All streams available - get latest frames from all
-                frames = self._pop_latest_frames()
-                if frames is None:
+                # Only proceed when the rendezvous has matched a group by timestamp
+                if matched_group is None:
                     _t.sleep(0.0005)
                     continue
 
-                # Unpack all frames: (grid, avg, mult, speed, intervals, ts, seq)
+                # Unpack matched frames: (grid, avg, mult, speed, intervals, ts, seq)
                 grids = []
                 avgs = []
                 mults = []
@@ -619,8 +618,8 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 intervals_list = []
                 timestamps = []
                 seqs = []
-                
-                for frame in frames:
+
+                for frame in matched_group:
                     grid, avg, mult, speed, intervals, ts, seq = frame
                     grids.append(grid)
                     avgs.append(avg)
@@ -704,35 +703,33 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 overlay_frame = self._create_imgframe(overlay_img, ref_ts, max_seq)
                 self.out_overlay.send(overlay_frame)
 
-                # Compute pairwise metrics (excluding config row)
+                # O(N) reference-based metrics: compare each stream against stream 0
                 pair_metrics = []
                 max_dt_squares_sec = 0.0
-                
-                for i in range(self._num_streams):
+                ref_mask = aligned_masks[0][:-1, :]
+                ref_lit_idx = self._last_lit_index_top_row(aligned_masks[0])
+
+                for i in range(1, self._num_streams):
                     mask_i = aligned_masks[i][:-1, :]
-                    for j in range(i + 1, self._num_streams):
-                        mask_j = aligned_masks[j][:-1, :]
-                        
-                        on_i = int(mask_i.sum())
-                        on_j = int(mask_j.sum())
-                        overlap = int(np.logical_and(mask_i, mask_j).sum())
-                        union = on_i + on_j - overlap
-                        
-                        recall_i = (overlap / on_i) if on_i > 0 else 0.0
-                        recall_j = (overlap / on_j) if on_j > 0 else 0.0
-                        iou = (overlap / union) if union > 0 else 0.0
-                        
-                        pair_metrics.append((i, j, recall_i, recall_j, iou))
-                        
-                        # Compute timing delta between this pair
-                        idx_i = self._last_lit_index_top_row(aligned_masks[i])
-                        idx_j = self._last_lit_index_top_row(aligned_masks[j])
-                        if idx_i is not None and idx_j is not None:
-                            diff = abs((idx_j - idx_i) % N)
-                            diff_alt = abs((idx_i - idx_j) % N)
-                            diff_min = min(diff, diff_alt)
-                            dt_squares = (diff_min * self.led_period_us) / 1e6
-                            max_dt_squares_sec = max(max_dt_squares_sec, dt_squares)
+
+                    on_ref = int(ref_mask.sum())
+                    on_i = int(mask_i.sum())
+                    overlap = int(np.logical_and(ref_mask, mask_i).sum())
+                    union = on_ref + on_i - overlap
+
+                    recall_ref = (overlap / on_ref) if on_ref > 0 else 0.0
+                    recall_i = (overlap / on_i) if on_i > 0 else 0.0
+                    iou = (overlap / union) if union > 0 else 0.0
+
+                    pair_metrics.append((0, i, recall_ref, recall_i, iou))
+
+                    idx_i = self._last_lit_index_top_row(aligned_masks[i])
+                    if ref_lit_idx is not None and idx_i is not None:
+                        diff = abs((idx_i - ref_lit_idx) % N)
+                        diff_alt = abs((ref_lit_idx - idx_i) % N)
+                        diff_min = min(diff, diff_alt)
+                        dt_squares = (diff_min * self.led_period_us) / 1e6
+                        max_dt_squares_sec = max(max_dt_squares_sec, dt_squares)
 
                 # Determine pass/fail
                 passed = None
@@ -773,14 +770,9 @@ class LEDGridComparison(dai.node.ThreadedHostNode):
                 for i in range(self._num_streams):
                     self._compared_seqs[i] = seqs[i]
 
-                # Console log
-                try:
-                    print(f"LEDGridComparison: {self._num_streams} streams, max dT={max_dt_squares_sec:.6f}s", flush=True)
-                except Exception:
-                    pass
+                log.debug("LEDGridComparison: %d streams, max dT=%.6fs",
+                         self._num_streams, max_dt_squares_sec)
 
             except Exception as e:
-                print(f"LEDGridComparison error: {e}")
-                import traceback
-                traceback.print_exc()
+                log.error(f"LEDGridComparison error: {e}", exc_info=True)
                 continue

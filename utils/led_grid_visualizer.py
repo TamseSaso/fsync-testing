@@ -1,7 +1,10 @@
+import logging
 import cv2
 import numpy as np
 import depthai as dai
 from typing import Tuple
+
+log = logging.getLogger(__name__)
 
 
 class LEDGridVisualizer(dai.node.ThreadedHostNode):
@@ -125,7 +128,7 @@ class LEDGridVisualizer(dai.node.ThreadedHostNode):
         return img
 
     def run(self) -> None:
-        print(f"LEDGridVisualizer started with {self.grid_size}x{self.grid_size} grid, output size {self.output_w}x{self.output_h}")
+        log.info(f"LEDGridVisualizer started with {self.grid_size}x{self.grid_size} grid, output size {self.output_w}x{self.output_h}")
         
         while self.isRunning():
             try:
@@ -178,8 +181,8 @@ class LEDGridVisualizer(dai.node.ThreadedHostNode):
                     output_msg = self._create_imgframe(visualization, buffer_msg)
                     self.out.send(output_msg)
                 else:
-                    print(f"Invalid grid data size: {data.size}, expected {expected_size}")
+                    log.warning(f"Invalid grid data size: {data.size}, expected {expected_size}")
                     
             except Exception as e:
-                print(f"LEDGridVisualizer error: {e}")
+                log.error(f"LEDGridVisualizer error: {e}")
                 continue

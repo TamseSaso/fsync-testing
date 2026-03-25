@@ -1,9 +1,14 @@
+import logging
 import time
 import threading
 import depthai as dai
 from typing import Optional
 
 from datetime import datetime, timedelta
+
+from .health import NodeHealth
+
+log = logging.getLogger(__name__)
 
 class SharedTicker:
     """A simple cross-node ticker that can be periodic or manual.
@@ -40,11 +45,16 @@ class SharedTicker:
             self._cond.notify_all()
             return self._tick_idx
 
+    def stop(self):
+        with self._cond:
+            self._running = False
+            self._cond.notify_all()
+
     def _run(self):
         if self._manual_mode:
             return
         next_fire = self._start_time
-        while True:
+        while self._running:
             now = time.monotonic()
             sleep = max(0.0, next_fire - now)
             if sleep:
@@ -53,12 +63,22 @@ class SharedTicker:
                 self._tick_idx += 1
                 self._cond.notify_all()
             next_fire += self.period_sec
+            # Catch up if we fell behind (skip missed ticks instead of bunching)
+            now2 = time.monotonic()
+            if next_fire < now2 - self.period_sec:
+                skipped = int((now2 - next_fire) / self.period_sec)
+                next_fire += skipped * self.period_sec
+                if skipped > 0:
+                    log.warning("SharedTicker skipped %d ticks (load)", skipped)
 
     def wait_next_tick(self, last_seen_idx: int = 0) -> int:
-        """Blocks until a new tick is published. Returns the new tick index."""
+        """Blocks until a new tick is published. Returns the new tick index.
+        Raises RuntimeError if the ticker is stopped while waiting."""
         with self._cond:
             while self._tick_idx <= last_seen_idx:
-                self._cond.wait()
+                if not self._running:
+                    raise RuntimeError("SharedTicker stopped")
+                self._cond.wait(timeout=1.0)
             return self._tick_idx
 
 class M8FsyncSamplingNode(dai.node.ThreadedHostNode):
@@ -122,21 +142,19 @@ class M8FsyncSamplingNode(dai.node.ThreadedHostNode):
                     ts = self.previous_frame_rcv_timestamp[idx]
 
                     if datetime.now() - ts > timedelta(microseconds=round(self.frame_lost_threshold_sec*1e6)):
-                        print(f"[{self.device_ids[idx]}]: Frame lost")
-                        exit(1)
+                        raise RuntimeError(f"[{self.device_ids[idx]}]: Frame lost")
                 while i.has():
                     self.latest_frames[idx] = i.get()
                     self.previous_frame_rcv_timestamp[idx] = datetime.now()
                     if not self.receivedFrames[idx]:
-                        print("=== Received frame from", self.device_ids[idx])
+                        log.info(f"=== Received frame from {self.device_ids[idx]}")
                         self.receivedFrames[idx] = True
 
             end_time = datetime.now()
             elapsed_sec = (end_time - self.start_time).total_seconds()
             if not self.all_received:
                 if elapsed_sec >= self.recv_all_timeout_sec:
-                    print("Timeout: Didn't receive all frames in time")
-                    exit(1)
+                    raise RuntimeError("Timeout: Didn't receive all frames in time")
 
             # -------------------------------------------------------------------
             # Synchronise: we need at least one frame from every camera and their
@@ -151,11 +169,10 @@ class M8FsyncSamplingNode(dai.node.ThreadedHostNode):
                     self.initially_locked = True
                 
                 if self.debug:
-                    print(f"M8FsyncSamplingNode: delta = {delta}")
+                    log.debug(f"M8FsyncSamplingNode: delta = {delta}")
 
                 if self.initially_locked and delta > self.sync_threshold_sec:
-                    print("Synchronization lost")
-                    exit(1)
+                    raise RuntimeError("Synchronization lost")
 
                 if count % self.undersampling_factor == 0:
                     for i in range(len(self.inputs)):
@@ -173,7 +190,8 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
 
     def __init__(self, sample_interval_seconds: Optional[float] = 5.0, shared_ticker: Optional[SharedTicker] = None, ptp_slot_period_sec: Optional[float] = None, ptp_slot_phase: float = 0.0, debug: bool = False) -> None:
         super().__init__()
-        
+        self.health = NodeHealth()
+
         self.input = self.createInput()
         self.input.setPossibleDatatypes([(dai.DatatypeEnum.ImgFrame, True)])
         
@@ -198,28 +216,28 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
         frames.link(self.input)
         return self
 
-    def wait_first_frame(self, timeout: float = 2.0) -> bool:
+    def wait_first_frame(self, timeout: Optional[float] = 2.0) -> bool:
         """Block until the first frame has been received (or timeout). Returns True if a frame arrived."""
-        deadline = time.monotonic() + (timeout if timeout is not None else 0.0)
+        deadline = time.monotonic() + timeout if timeout is not None else None
         while True:
             with self.frame_lock:
                 if self.latest_frame is not None:
                     return True
-            if timeout is not None and time.monotonic() > deadline:
+            if deadline is not None and time.monotonic() > deadline:
                 return False
-            time.sleep(0.005)
+            time.sleep(0.01)
 
     def run(self) -> None:
         if self.shared_ticker is not None:
             if self.shared_ticker._manual_mode:
-                print("FrameSamplingNode started with MANUAL shared ticker")
+                log.info("FrameSamplingNode started with MANUAL shared ticker")
             else:
-                print("FrameSamplingNode started with PERIODIC shared ticker")
+                log.info("FrameSamplingNode started with PERIODIC shared ticker")
         elif self.ptp_slot_period is not None:
-            print(f"FrameSamplingNode started with PTP slotting at period {self.ptp_slot_period}s (phase {self.ptp_slot_phase})")
+            log.info(f"FrameSamplingNode started with PTP slotting at period {self.ptp_slot_period}s (phase {self.ptp_slot_phase})")
         else:
             mode = "EVERY-FRAME mode" if self.sample_interval is None else f"{self.sample_interval}s interval"
-            print(f"FrameSamplingNode started with {mode}")
+            log.info(f"FrameSamplingNode started with {mode}")
 
         # Start the sampling timer thread only if not in every-frame mode
         if not self._every_frame_mode:
@@ -231,21 +249,35 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
             try:
                 frame_msg: dai.ImgFrame = self.input.get()
                 if frame_msg is not None:
+                    self.health.record_received()
                     with self.frame_lock:
                         self.latest_frame = frame_msg
 
                 # Forward every frame immediately in every-frame mode
                 if self._every_frame_mode and frame_msg is not None:
                     self.out.send(frame_msg)
+                    self.health.record_produced()
 
                 # Bootstrap: in tick-only mode do NOT emit; just mark bootstrapped so first tick can forward latest_frame
                 if frame_msg is not None and not self._bootstrapped and (self.shared_ticker is not None and self.ptp_slot_period is None):
                     self._bootstrapped = True
             except Exception as e:
-                print(f"FrameSamplingNode input error: {e}")
+                if "closed" in str(e).lower():
+                    log.debug("FrameSamplingNode exiting: queue closed")
+                    break
+                log.error("FrameSamplingNode input error: %s", e)
                 continue
 
     def _sampling_loop(self) -> None:
+        try:
+            self._sampling_loop_inner()
+        except Exception as e:
+            if "closed" in str(e).lower() or "stopped" in str(e).lower():
+                log.debug("Sampling loop exiting: %s", e)
+            else:
+                log.error("Sampling loop error: %s", e)
+
+    def _sampling_loop_inner(self) -> None:
         while self.isRunning():
             # 1) Shared global ticker mode
             if self.shared_ticker is not None:
@@ -253,8 +285,9 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                 with self.frame_lock:
                     if self.latest_frame is not None:
                         self.out.send(self.latest_frame)
+                        self.health.record_produced()
                         if self.debug:
-                            print(f"Frame sampled on global tick #{self._last_tick_idx} at {time.monotonic():.3f}s")
+                            log.debug(f"Frame sampled on global tick #{self._last_tick_idx} at {time.monotonic():.3f}s")
                 continue
 
             # 2) PTP-slotted mode (device timestamps aligned by PTP)
@@ -265,18 +298,15 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                     try:
                         ts = frame.getTimestamp(dai.CameraExposureOffset.END).total_seconds()
                     except Exception:
-                        # Fallback: if offset not supported, use default timestamp
                         ts = frame.getTimestamp().total_seconds()
                     slot_idx = int((ts + self.ptp_slot_phase) / self.ptp_slot_period)
 
-                    # If no rendezvous is set, align the first emission to the next slot boundary
                     if self._target_start_slot is None:
                         self._target_start_slot = slot_idx + 1
-                        print(f"FrameSamplingNode PTP: arming for next slot >= {self._target_start_slot}")
+                        log.info(f"FrameSamplingNode PTP: arming for next slot >= {self._target_start_slot}")
                         time.sleep(0.0005)
                         continue
 
-                    # If armed for a specific slot, hold until that slot is reached
                     if slot_idx < self._target_start_slot:
                         time.sleep(0.0005)
                         continue
@@ -285,9 +315,9 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
                         with self.frame_lock:
                             if self.latest_frame is not None:
                                 self.out.send(self.latest_frame)
+                                self.health.record_produced()
                         self._last_slot_idx = slot_idx
-                        print(f"Frame sampled on PTP slot #{slot_idx} (ts={ts:.6f})")
-                # Avoid busy spin if no new frame yet
+                        log.debug(f"Frame sampled on PTP slot #{slot_idx} (ts={ts:.6f})")
                 time.sleep(0.001)
                 continue
 
@@ -296,6 +326,7 @@ class FrameSamplingNode(dai.node.ThreadedHostNode):
             with self.frame_lock:
                 if self.latest_frame is not None:
                     self.out.send(self.latest_frame)
+                    self.health.record_produced()
                     now = time.time()
-                    print(f"Frame sampled at {now:.2f}s")
+                    log.debug(f"Frame sampled at {now:.2f}s")
                     self.last_sample_time = now
